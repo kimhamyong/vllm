@@ -1,27 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""
-Saves each worker's model state dict directly to a checkpoint, which enables a
-fast load path for large tensor-parallel models where each worker only needs to
-read its own shard rather than the entire checkpoint.
-
-Example usage:
-
-python save_sharded_state.py \
-    --model /path/to/load \
-    --quantization deepspeedfp \
-    --tensor-parallel-size 8 \
-    --output /path/to/save
-
-Then, the model can be loaded with
-
-llm = LLM(
-    model="/path/to/save",
-    load_format="sharded_state",
-    quantization="deepspeedfp",
-    tensor_parallel_size=8,
-)
-"""
 
 import dataclasses
 import os

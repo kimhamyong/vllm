@@ -662,6 +662,15 @@ class MultiStepModelRunner(GPUModelRunnerBase[StatefulModelInput]):
         return self._base_model_runner.save_sharded_state(
             path, pattern, max_size)
 
+    def save_uneven(
+        self,
+        path: str,
+        pattern: Optional[str] = None,
+        max_size: Optional[int] = None,
+    ) -> None:
+        return self._base_model_runner.save_uneven(
+            path, pattern, max_size)
+
     def save_tensorized_model(self,
                               tensorizer_config: TensorizerConfig) -> None:
         return self._base_model_runner.save_tensorized_model(tensorizer_config)

@@ -343,6 +343,19 @@ class EngineCore:
         self.model_executor.save_sharded_state(path=path,
                                                pattern=pattern,
                                                max_size=max_size)
+        print("[🅾️🅾️core🅾️🅾️] ")
+    
+    def save_uneven(
+        self,
+        path: str,
+        pattern: Optional[str] = None,
+        max_size: Optional[int] = None,
+    ) -> None:
+        print("[☑️core☑️] ")
+        self.model_executor.save_uneven(path=path,
+                                               pattern=pattern,
+                                               max_size=max_size)
+        print("[☑️☑️core☑️☑️] ")
 
     def collective_rpc(self,
                        method: Union[str, Callable[..., _R]],

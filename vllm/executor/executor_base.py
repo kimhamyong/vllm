@@ -246,6 +246,17 @@ class ExecutorBase(ABC):
                                         pattern=pattern,
                                         max_size=max_size))
 
+    def save_uneven(
+        self,
+        path: str,
+        pattern: Optional[str] = None,
+        max_size: Optional[int] = None,
+    ) -> None:
+        self.collective_rpc("save_uneven",
+                            kwargs=dict(path=path,
+                                        pattern=pattern,
+                                        max_size=max_size))
+
     @abstractmethod
     def check_health(self) -> None:
         """Checks if the executor is healthy. If not, it should raise an

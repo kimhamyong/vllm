@@ -150,6 +150,12 @@ class EngineCoreClient(ABC):
                            max_size: Optional[int] = None) -> None:
         raise NotImplementedError
 
+    def save_uneven(self,
+                           path: str,
+                           pattern: Optional[str] = None,
+                           max_size: Optional[int] = None) -> None:
+        raise NotImplementedError
+
     def collective_rpc(self,
                        method: Union[str, Callable[..., _R]],
                        timeout: Optional[float] = None,
@@ -282,6 +288,13 @@ class InprocClient(EngineCoreClient):
                            max_size: Optional[int] = None) -> None:
         print("[🔽core_client🔽] ")
         self.engine_core.save_sharded_state(path, pattern, max_size)
+
+    def save_uneven(self,
+                           path: str,
+                           pattern: Optional[str] = None,
+                           max_size: Optional[int] = None) -> None:
+        print("[🔽core_client🔽] ")
+        self.engine_core.save_uneven(path, pattern, max_size)
 
     def collective_rpc(self,
                        method: Union[str, Callable[..., _R]],
@@ -653,6 +666,12 @@ class SyncMPClient(MPClient):
                            pattern: Optional[str] = None,
                            max_size: Optional[int] = None) -> None:
         self.call_utility("save_sharded_state", path, pattern, max_size)
+
+    def save_uneven(self,
+                           path: str,
+                           pattern: Optional[str] = None,
+                           max_size: Optional[int] = None) -> None:
+        self.call_utility("save_uneven", path, pattern, max_size)
 
 
 class AsyncMPClient(MPClient):

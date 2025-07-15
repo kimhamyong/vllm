@@ -222,6 +222,18 @@ class Worker(LocalOrDistributedWorkerBase):
             max_size=max_size,
         )
 
+    def save_uneven(
+        self,
+        path: str,
+        pattern: Optional[str] = None,
+        max_size: Optional[int] = None,
+    ) -> None:
+        self.model_runner.save_uneven(
+            path,
+            pattern=pattern,
+            max_size=max_size,
+        )
+
     def save_tensorized_model(
         self,
         tensorizer_config: TensorizerConfig,

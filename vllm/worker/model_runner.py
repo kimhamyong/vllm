@@ -1242,6 +1242,20 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
             max_size=max_size,
         )
 
+    def save_uneven(
+        self,
+        path: str,
+        pattern: Optional[str] = None,
+        max_size: Optional[int] = None,
+    ) -> None:
+        from vllm.model_executor.model_loader import ShardedStateLoader
+        ShardedStateLoader.save_model(
+            self.model,
+            path,
+            pattern=pattern,
+            max_size=max_size,
+        )
+
     def save_tensorized_model(
         self,
         tensorizer_config: TensorizerConfig,
