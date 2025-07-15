@@ -387,6 +387,7 @@ class Worker(WorkerBase):
         max_size: Optional[int] = None,
     ) -> None:
         from vllm.model_executor.model_loader import ShardedStateLoader
+        print("[☑️gpu_woker☑️] ")
         ShardedStateLoader.save_model(
             self.model_runner.model,
             path,

@@ -972,12 +972,16 @@ def init_distributed_environment(
     if local_rank == -1:
         # local rank not set, this usually happens in single-node
         # setting, where we can use rank as local rank
-        if distributed_init_method == "env://":
+        if distributed_init_method == "env://": # "env://": 환경변수에서 master 주소/port 읽어와서 초기화
             local_rank = envs.LOCAL_RANK
         else:
             local_rank = rank
     global _WORLD, _NODE_COUNT
+    # _WORLD -> init_world_group()을 통해 생성된 전체 프로세스 그룹 객체
+    # _NODE_COUNT -> 실제 노드 수 계산
+
     if _WORLD is None:
+        # torch.distributed.get_world_size() -> 전체 GPU 개수 = 전체 rank 수
         ranks = list(range(torch.distributed.get_world_size()))
         _WORLD = init_world_group(ranks, local_rank, backend)
         _NODE_COUNT = _node_count(_WORLD.cpu_group)

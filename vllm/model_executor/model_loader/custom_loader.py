@@ -14,30 +14,23 @@ from vllm.config import LoadConfig, ModelConfig
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.base_loader import BaseModelLoader
 from vllm.model_executor.model_loader.weight_utils import (
-    download_weights_from_hf, runai_safetensors_weights_iterator)
+    download_weights_from_hf)
 from vllm.transformers_utils.s3_utils import glob as s3_glob
 from vllm.transformers_utils.utils import is_s3
 
 logger = init_logger(__name__)
 
 
-class ShardedStateLoader(BaseModelLoader):
+class CustomLoader(BaseModelLoader):
     """
-    Model loader that directly loads each worker's model state dict, which
-    enables a fast load path for large tensor-parallel models where each worker
-    only needs to read its own shard rather than the entire checkpoint. See
-    `examples/offline_inference/save_sharded_state.py` for creating a sharded
-    checkpoint.
+    Custom model loader (based on ShardedStateLoader).
     """
 
     DEFAULT_PATTERN = "model-rank-{rank}-part-{part}.safetensors"
 
-    def __init__(self,
-                 load_config: LoadConfig,
-                 runai_model_streamer: bool = False):
+    def __init__(self, load_config: LoadConfig):
         super().__init__(load_config)
 
-        self.runai_model_streamer = runai_model_streamer
         extra_config = ({} if load_config.model_loader_extra_config is None
                         else load_config.model_loader_extra_config.copy())
         self.pattern = extra_config.pop("pattern", self.DEFAULT_PATTERN)
@@ -49,10 +42,6 @@ class ShardedStateLoader(BaseModelLoader):
     @staticmethod
     def _filter_subtensors(
         tensors: dict[str, torch.Tensor], ) -> dict[str, torch.Tensor]:
-        """
-        Filter out all tensors that share the same memory or a subset of the
-        memory of another tensor.
-        """
         same_storage_groups: dict[Any, list[tuple[str, torch.Tensor]]] = (
             collections.defaultdict(list))
         for key, tensor in tensors.items():
@@ -74,9 +63,8 @@ class ShardedStateLoader(BaseModelLoader):
                     if a < a2 or b2 < b:
                         continue
                     if a2 < a or b < b2 or not t.is_contiguous():
-                        break  # t2 covers strictly more memory than t.
+                        break
                     if k2 < k:
-                        # Same tensors, keep the one with the smaller key.
                         break
                 else:
                     result[k] = t
@@ -107,11 +95,7 @@ class ShardedStateLoader(BaseModelLoader):
         if hasattr(model_config, "model_weights"):
             model_weights = model_config.model_weights
         local_model_path = model_weights
-
-        # 현재 TP 환경에서의 rank를 가져옴
         rank = get_tensor_model_parallel_rank()
-
-        # 각 rank에 해당하는 weight 파일 경로 패턴을 구성
         pattern = os.path.join(
             local_model_path,
             self.pattern.format(rank=rank, part="*"),
@@ -122,27 +106,17 @@ class ShardedStateLoader(BaseModelLoader):
             file_pattern = f"*{self.pattern.format(rank=rank, part=' * ')}"
             filepaths = s3_glob(path=local_model_path,
                                 allow_pattern=[file_pattern])
-        
-        # 해당 rank에 맞는 weight 파일 목록 찾기
         else:
             filepaths = glob.glob(pattern)
+
         if not filepaths:
-            # TODO: support un-sharded checkpoints too
             raise ValueError(
                 f"Could not find checkpoint files '{pattern}', only "
                 f"pre-sharded checkpoints are currently supported!")
+
         state_dict = self._filter_subtensors(model.state_dict())
-
-        # 각 파일을 순회하면서 분할된 tensor를 꺼냄
         for key, tensor in self.iterate_over_files(filepaths):
-            # If loading with LoRA enabled, additional padding may
-            # be added to certain parameters. We only load into a
-            # narrowed view of the parameter data.
-
-            # state_dict 딕셔너리에서 특정 파라미터(key)에 해당하는 텐서 값을 꺼냄
-            param_data = state_dict[key].data # 특정 파라미터 키
-
-            # 해당 파라미터의 전체 shape를 가져옴
+            param_data = state_dict[key].data
             param_shape = state_dict[key].shape
             for dim, size in enumerate(tensor.shape):
                 if size < param_shape[dim]:
@@ -155,30 +129,22 @@ class ShardedStateLoader(BaseModelLoader):
                     key,
                     param_shape,
                 )
-
-            print("[✅✅] ShardedStateLoader")
-
-            # tensor에 저장된 weight 값을 param_data로 in-place 복사    
+            print("[👌] CustomLoader loading")
             param_data.copy_(tensor)
-
-            # state_dict 딕셔너리에서 현재 key-value 항목을 제거
-            # weight를 로딩한 key이므로, state_dict이 남아 있으면 weight가 누락된 것
             state_dict.pop(key)
+
         if state_dict:
             raise ValueError(
                 f"Missing keys {tuple(state_dict)} in loaded state!")
 
     def iterate_over_files(
             self, paths) -> Generator[tuple[str, torch.Tensor], None, None]:
-        if self.runai_model_streamer:
-            yield from runai_safetensors_weights_iterator(paths, True)
-        else:
-            from safetensors.torch import safe_open
-            for path in paths:
-                with safe_open(path, framework="pt") as f:
-                    for key in f.keys():  # noqa: SIM118
-                        tensor = f.get_tensor(key)
-                        yield key, tensor
+        from safetensors.torch import safe_open
+        for path in paths:
+            with safe_open(path, framework="pt") as f:
+                for key in f.keys():
+                    tensor = f.get_tensor(key)
+                    yield key, tensor
 
     @staticmethod
     def save_model(
@@ -188,15 +154,14 @@ class ShardedStateLoader(BaseModelLoader):
         max_size: Optional[int] = None,
     ) -> None:
         from safetensors.torch import save_file
-
         from vllm.distributed import get_tensor_model_parallel_rank
 
         if pattern is None:
-            pattern = ShardedStateLoader.DEFAULT_PATTERN
+            pattern = CustomLoader.DEFAULT_PATTERN
         rank = get_tensor_model_parallel_rank()
         part_idx = 0
         total_size = 0
-        state_dict = ShardedStateLoader._filter_subtensors(model.state_dict())
+        state_dict = CustomLoader._filter_subtensors(model.state_dict())
         state_dict_part: dict[str, torch.Tensor] = {}
         for key, tensor in state_dict.items():
             param_size = tensor.nelement() * tensor.element_size()

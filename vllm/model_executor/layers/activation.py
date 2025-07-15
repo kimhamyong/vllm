@@ -347,6 +347,7 @@ class ScaledActivation(nn.Module):
         super().__init__()
         self.act = act_module
         self.input_is_parallel = input_is_parallel
+        # TP 구조에서 이 activation 레이어가 분산되어 있다면, 각 rank에 해당하는 scale만 사용해야 하므로 해당 부분만 따로 나눠서 저장
         if input_is_parallel:
             tp_size = get_tensor_model_parallel_world_size()
             intermediate_size_per_partition = divide(intermediate_size,
@@ -362,14 +363,21 @@ class ScaledActivation(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.act(x) / self.scales
 
+    # loaded_weight에서 현재 rank에 해당하는 부분만 narrow() -> 실제 파라미터에 copy_하여 로딩
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor):
         param_data = param.data
+        # true라면; 디스크에서 불러온 weight에서 현재 GPU rank에 해당하는 조각만 가져와야 함
         if self.input_is_parallel:
+            # tp_rank: 현재 GPU의 rank (예: 0번, 1번, 2번 GPU)
             tp_rank = get_tensor_model_parallel_rank()
+            # shard_size: param이 저장된 부분의 크기
             shard_size = param_data.shape[0]
+            # start_idx: 전체 weight에서 이 rank가 가져올 시작 위치
             start_idx = tp_rank * shard_size
+            # 전체 weight에서 dim=0 방향으로 shard_size만큼 슬라이스
             loaded_weight = loaded_weight.narrow(0, start_idx, shard_size)
         assert param_data.shape == loaded_weight.shape
+        # 메모리 위치를 유지하면서 값만 덮어쓰기
         param_data.copy_(loaded_weight)
 
 

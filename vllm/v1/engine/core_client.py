@@ -280,6 +280,7 @@ class InprocClient(EngineCoreClient):
                            path: str,
                            pattern: Optional[str] = None,
                            max_size: Optional[int] = None) -> None:
+        print("[🔽core_client🔽] ")
         self.engine_core.save_sharded_state(path, pattern, max_size)
 
     def collective_rpc(self,

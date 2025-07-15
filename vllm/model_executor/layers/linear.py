@@ -454,6 +454,9 @@ class ColumnParallelLinear(LinearBase):
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
         tp_rank = get_tensor_model_parallel_rank()
+
+        print(f"✅[weight_loader] TP rank: {tp_rank}, param shape: {param.shape}, loaded weight shape: {loaded_weight.shape}")
+
         output_dim = getattr(param, "output_dim", None)
 
         is_sharded_weight = getattr(param, "is_sharded_weight", False)
@@ -481,6 +484,7 @@ class ColumnParallelLinear(LinearBase):
         if output_dim is not None and not is_sharded_weight:
             shard_size = param_data.shape[output_dim]
             start_idx = tp_rank * shard_size
+            print(f"✅[narrow] shape={param_data.shape}, output_dim={output_dim}, tp_rank={tp_rank}, shard_size={shard_size}, start_idx={start_idx}")
             loaded_weight = loaded_weight.narrow(output_dim, start_idx,
                                                  shard_size)
 
@@ -900,6 +904,7 @@ class QKVParallelLinear(ColumnParallelLinear):
 
     def _load_fused_module_from_checkpoint(self, param: BasevLLMParameter,
                                            loaded_weight: torch.Tensor):
+                                           # param: 로딩할 대상 파라미터, loaded_weight: 이미 fused된 하나의 weight 텐서(q+k+v)
         """
         Handle special case for models where QKV layers are already 
         fused on disk. In this case, we have no shard id. This function
@@ -929,11 +934,14 @@ class QKVParallelLinear(ColumnParallelLinear):
                     param.adjust_shard_indexes_for_packing(
                     shard_size=shard_size, shard_offset=shard_offset)
 
+            # weight 슬라이싱
             loaded_weight_shard = loaded_weight.narrow(param.output_dim,
                                                        shard_offset,
                                                        shard_size)
+            # 잘라낸 q,k,v weigh 조각을 실제 모델 파라미터에 반영
             self.weight_loader_v2(param, loaded_weight_shard, shard_id)
 
+    # load_qkv_weight() 메서드가 있다는 걸 전제함 -> TP shard 처리 함수
     def weight_loader_v2(self,
                          param: BasevLLMParameter,
                          loaded_weight: torch.Tensor,
@@ -990,6 +998,7 @@ class QKVParallelLinear(ColumnParallelLinear):
                 }
             return
 
+        # GGUF 모델일 때 직접 분할해서 로딩하는 구조
         if is_gguf_weight:
             tp_size = get_tensor_model_parallel_world_size()
             tp_rank = get_tensor_model_parallel_rank()
