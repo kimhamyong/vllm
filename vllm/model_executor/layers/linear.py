@@ -408,6 +408,8 @@ class ColumnParallelLinear(LinearBase):
         # Divide the weight matrix along the last dimension.
         self.tp_size = get_tensor_model_parallel_world_size()
         self.input_size_per_partition = input_size
+
+        #열 방향으로 나눔 → 출력 차원을 tp_size 개로 나눔
         self.output_size_per_partition = divide(output_size, self.tp_size)
         self.output_partition_sizes = [self.output_size_per_partition]
         # If QKV or MergedColumn, use output size of each partition.
@@ -459,6 +461,7 @@ class ColumnParallelLinear(LinearBase):
 
         output_dim = getattr(param, "output_dim", None)
 
+        #이 파라미터가 TP로 쪼개진 weight인지 여부를 판단
         is_sharded_weight = getattr(param, "is_sharded_weight", False)
         use_bitsandbytes_4bit = getattr(param, "use_bitsandbytes_4bit", False)
         # bitsandbytes loads the weights of the specific portion
@@ -482,9 +485,15 @@ class ColumnParallelLinear(LinearBase):
 
         param_data = param.data
         if output_dim is not None and not is_sharded_weight:
+
+            #현재 rank가 맡게 될 조각의 크기 (한 rank가 담당할 weight 길이)
             shard_size = param_data.shape[output_dim]
+
+            #현재 rank가 담당할 weight의 시작 위치 인덱스
             start_idx = tp_rank * shard_size
             print(f"✅[narrow] shape={param_data.shape}, output_dim={output_dim}, tp_rank={tp_rank}, shard_size={shard_size}, start_idx={start_idx}")
+            
+            #narrow() -> 텐서를 특정 축에서 부분 슬라이싱
             loaded_weight = loaded_weight.narrow(output_dim, start_idx,
                                                  shard_size)
 

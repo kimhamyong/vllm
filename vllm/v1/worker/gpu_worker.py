@@ -402,7 +402,7 @@ class Worker(WorkerBase):
         max_size: Optional[int] = None,
     ) -> None:
         from vllm.model_executor.model_loader import CustomLoader
-        print("[☑️☑️] ")
+        print("[☑️☑️gpu_woker☑️☑️] ")
         CustomLoader.save_model(
             self.model_runner.model,
             path,
