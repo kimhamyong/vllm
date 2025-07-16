@@ -99,6 +99,7 @@ class CustomLoader(BaseModelLoader):
     def load_weights(self, model: nn.Module,
                      model_config: ModelConfig) -> None:
         from vllm.distributed import get_tensor_model_parallel_rank
+        from vllm.distributed import get_tensor_model_parallel_world_size
         import torch
 
         model_weights = model_config.model
@@ -109,9 +110,17 @@ class CustomLoader(BaseModelLoader):
         # 현재 TP 환경에서의 rank를 가져옴
         rank = get_tensor_model_parallel_rank()
 
-        # rank 당 쪼개둔 묶음을 모두 읽도록 수정
+        # 현재 TP rank / world 크기
+        world_size = get_tensor_model_parallel_world_size()
+        half = world_size // 2 # 일단 단순히 더 쪼갠 크기만큼 나눔
+
+        if rank < half:                                                
+           desired_tags = (f"{rank}0", f"{rank}1", f"{rank+half}0")
+       else:                                                            
+           desired_tags = (f"{rank}1",)
+
         filepaths = []
-        for tag in (f"{rank}0", f"{rank}1"):
+        for tag in desired_tags:
             pattern = os.path.join(
                 local_model_path,
                 self.pattern.format(rank=tag, part="*"),
