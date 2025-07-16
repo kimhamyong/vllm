@@ -114,10 +114,17 @@ class CustomLoader(BaseModelLoader):
         world_size = get_tensor_model_parallel_world_size()
         half = world_size // 2 # 일단 단순히 더 쪼갠 크기만큼 나눔
 
-        if rank < half:                                                
-           desired_tags = (f"{rank}0", f"{rank}1", f"{rank+half}0")
-       else:                                                            
-           desired_tags = (f"{rank}1",)
+        # ── rank별로 가져올 shard 태그 결정 ──────────────────────────
+        if rank < half:                                   # rank 0~(half-1)
+            desired_tags = (
+                f"{rank}0",                               # 자기 0번
+                f"{rank}1",                               # 자기 1번
+                f"{rank + half}0",                        # 뒷노드의 0번 (
+            )
+        else:                                             # rank ≥ half
+            desired_tags = (
+                f"{rank}1",                               # 자기 1번만
+            )
 
         filepaths = []
         for tag in desired_tags:
