@@ -178,6 +178,7 @@ class CustomLoader(BaseModelLoader):
     ) -> None:
         from safetensors.torch import save_file
         from vllm.distributed import get_tensor_model_parallel_rank
+        import torch
 
         if pattern is None:
             pattern = CustomLoader.DEFAULT_PATTERN
@@ -207,6 +208,8 @@ class CustomLoader(BaseModelLoader):
             
                 # 첫 번째 절반과 두 번째 절반으로 분할
                 first_half, second_half = torch.split(tensor, [split_size, remaining_size], dim=-1)
+                first_half = first_half.contiguous()
+                second_half = second_half.contiguous()
             
                 # 텐서가 몇 바이트를 차지하는지 계산
                 param_size_0 = first_half.nelement() * first_half.element_size()
@@ -220,12 +223,12 @@ class CustomLoader(BaseModelLoader):
                     filename_1 = pattern.format(rank=f"{rank}1", part=part_idx)
                 
                     # 딕셔너리 {key: tensor}를 .safetensors 파일로 저장
-                    save_file(
-                        state_dict_part_0, # 지금까지 모아둔 파라미터 묶음 (첫 번째 절반)
+                    save_file( # 지금까지 모아둔 파라미터 묶음 (첫 번째 절반)
+                        {k: v.contiguous() for k, v in state_dict_part_0.items()}, # contiguous로 변환
                         os.path.join(path, filename_0),
                     )
-                    save_file(
-                        state_dict_part_1, # 지금까지 모아둔 파라미터 묶음 (두 번째 절반)
+                    save_file( # 지금까지 모아둔 파라미터 묶음 (두 번째 절반)
+                        {k: v.contiguous() for k, v in state_dict_part_1.items()}, # contiguous로 변환
                         os.path.join(path, filename_1),
                     )
                     print(f"[👌👌👌] {rank}, {filename_0}")
