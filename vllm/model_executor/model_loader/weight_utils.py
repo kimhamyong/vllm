@@ -126,6 +126,7 @@ def convert_bin_to_safetensor_file(
     dirname = os.path.dirname(sf_filename)
     os.makedirs(dirname, exist_ok=True)
     save_file(loaded, sf_filename, metadata={"format": "pt"})
+    print("[👌👌] weight_uitls")
 
     # check file size
     sf_size = os.stat(sf_filename).st_size

@@ -191,47 +191,111 @@ class CustomLoader(BaseModelLoader):
         # state_dict()로 모델 파라미터를 가져옴 -> CustomLoader._filter_subtensors()로 필터링: 불필요한 파라미터 제외
         state_dict = CustomLoader._filter_subtensors(model.state_dict())
 
-        # 저장 반복 구조 초기화: 현재 파일에 저장할 key-value 텐서 딕셔너리
-        state_dict_part: dict[str, torch.Tensor] = {}
+        # 저장 반복 구조 초기화: 현재 파일에 저장할 key-value 텐서 딕셔너리 (2개로 분할)
+        state_dict_part_0: dict[str, torch.Tensor] = {}  # 첫 번째 절반
+        state_dict_part_1: dict[str, torch.Tensor] = {}  # 두 번째 절반
         print("[👌👌] CustomLoader save_model")
 
         # state_dict 순회하면서 파일 분할 저장
         for key, tensor in state_dict.items():
 
-            # 텐서가 몇 바이트를 차지하는지 계산
-            param_size = tensor.nelement() * tensor.element_size() # 텐서 안에 있는 전체 원소 개수 * 텐서의 각 원소가 차지하는 바이트 수
+            # 각 텐서를 2등분
+            if len(tensor.shape) >= 1 and tensor.shape[-1] >= 2:
+                dim = -1  # 마지막 차원
+                size = tensor.shape[dim]
+                split_point = size // 2
             
-            # 저장할 텐서를 추가했을 때, 설정된 최대 파일 크기를 초과하는지 확인
-            if max_size is not None and total_size + param_size > max_size: # total_size: 누적 크기
+                # 첫 번째 절반
+                first_half = tensor.narrow(dim, 0, split_point)
+                # 두 번째 절반
+                second_half = tensor.narrow(dim, split_point, size - split_point)
+            
+                # 텐서가 몇 바이트를 차지하는지 계산
+                param_size_0 = first_half.nelement() * first_half.element_size()
+                param_size_1 = second_half.nelement() * second_half.element_size()
+            
+                # 저장할 텐서를 추가했을 때, 설정된 최대 파일 크기를 초과하는지 확인
+                if max_size is not None and total_size + param_size_0 > max_size: # total_size: 누적 크기
                 
-                # 저장할 파일 이름을 생성
-                filename = pattern.format(rank=rank, part=part_idx)
+                    # 저장할 파일 이름을 생성
+                    filename_0 = pattern.format(rank=f"{rank}0", part=part_idx)
+                    filename_1 = pattern.format(rank=f"{rank}1", part=part_idx)
                 
-                # 딕셔너리 {key: tensor}를 .safetensors 파일로 저장
-                # safetensors.torch.save_file
-                save_file(
-                    state_dict_part, # 지금까지 모아둔 파라미터 묶음
-                    os.path.join(path, filename),
-                )
-                print(f"[👌👌👌] {rank}, {filename}")
+                    # 딕셔너리 {key: tensor}를 .safetensors 파일로 저장
+                    save_file(
+                        state_dict_part_0, # 지금까지 모아둔 파라미터 묶음 (첫 번째 절반)
+                        os.path.join(path, filename_0),
+                    )
+                    save_file(
+                        state_dict_part_1, # 지금까지 모아둔 파라미터 묶음 (두 번째 절반)
+                        os.path.join(path, filename_1),
+                    )
+                    print(f"[👌👌👌] {rank}, {filename_0}")
+                    print(f"[👌👌👌] {rank}, {filename_1}")
 
+                    # 다음에 저장할 파일의 part 번호를 1 증가 -> 하나의 rank가 여러 파일을 저장
+                    part_idx += 1
+                    # 누적 크기를 초기화해서 다음 파일에 텐서들을 다시 채우기 시작
+                    total_size = 0
+                    # save_file로 저장한 텐서 딕셔너리를 초기화
+                    state_dict_part_0 = {}
+                    state_dict_part_1 = {}
 
-                # 다음에 저장할 파일의 part 번호를 1 증가 -> 하나의 rank가 여러 파일을 저장
-                part_idx += 1
-                # 누적 크기를 초기화해서 다음 파일에 텐서들을 다시 채우기 시작
-                total_size = 0
-                # save_file로 저장한 텐서 딕셔너리를 초기화
-                state_dict_part = {}
+                # 현재 순회 중인 텐서의 절반들을 각각 state_dict_part에 추가
+                state_dict_part_0[key] = first_half
+                state_dict_part_1[key] = second_half
+                # 이 텐서의 바이트 수를 현재 파일에 누적된 용량에 더함
+                total_size += param_size_0
+            
+            else:
+                # 분할할 수 없는 텐서는 복제
+                param_size = tensor.nelement() * tensor.element_size()
+            
+                # 저장할 텐서를 추가했을 때, 설정된 최대 파일 크기를 초과하는지 확인
+                if max_size is not None and total_size + param_size > max_size: # total_size: 누적 크기
+                
+                    # 저장할 파일 이름을 생성
+                    filename_0 = pattern.format(rank=f"{rank}0", part=part_idx)
+                    filename_1 = pattern.format(rank=f"{rank}1", part=part_idx)
+                
+                    # 딕셔너리 {key: tensor}를 .safetensors 파일로 저장
+                    save_file(
+                        state_dict_part_0, # 지금까지 모아둔 파라미터 묶음 (첫 번째 절반)
+                        os.path.join(path, filename_0),
+                    )
+                    save_file(
+                        state_dict_part_1, # 지금까지 모아둔 파라미터 묶음 (두 번째 절반)
+                        os.path.join(path, filename_1),
+                    )
+                    print(f"[👌👌👌] {rank}, {filename_0}")
+                    print(f"[👌👌👌] {rank}, {filename_1}")
 
-            # 현재 순회 중인 텐서를 state_dict_part에 추가
-            state_dict_part[key] = tensor
-            # 이 텐서의 바이트 수를 현재 파일에 누적된 용량에 더함
-            total_size += param_size
+                    # 다음에 저장할 파일의 part 번호를 1 증가 -> 하나의 rank가 여러 파일을 저장
+                    part_idx += 1
+                    # 누적 크기를 초기화해서 다음 파일에 텐서들을 다시 채우기 시작
+                    total_size = 0
+                    # save_file로 저장한 텐서 딕셔너리를 초기화
+                    state_dict_part_0 = {}
+                    state_dict_part_1 = {}
+
+                # 현재 순회 중인 텐서를 양쪽 모두에 추가 (복제)
+                state_dict_part_0[key] = tensor
+                state_dict_part_1[key] = tensor
+                # 이 텐서의 바이트 수를 현재 파일에 누적된 용량에 더함
+                total_size += param_size
 
         # 반복이 끝난 후, 저장되지 않은 마지막 묶음을 저장   
-        if len(state_dict_part) > 0:
-            filename = pattern.format(rank=rank, part=part_idx)
+        if len(state_dict_part_0) > 0:
+            filename_0 = pattern.format(rank=f"{rank}0", part=part_idx)
+            filename_1 = pattern.format(rank=f"{rank}1", part=part_idx)
             save_file(
-                state_dict_part,
-                os.path.join(path, filename),
+                state_dict_part_0,
+                os.path.join(path, filename_0),
             )
+            save_file(
+                state_dict_part_1,
+                os.path.join(path, filename_1),
+            )
+            print(f"[👌👌👌✅] {rank}, {filename_0}")
+            print(f"[👌👌👌✅] {rank}, {filename_1}")
+
