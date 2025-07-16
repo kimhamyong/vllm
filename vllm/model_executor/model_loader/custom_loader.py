@@ -101,6 +101,7 @@ class CustomLoader(BaseModelLoader):
         from vllm.distributed import get_tensor_model_parallel_rank
         from vllm.distributed import get_tensor_model_parallel_world_size
         import torch
+        import ray, tempfile, os, glob, shutil
 
         model_weights = model_config.model
         if hasattr(model_config, "model_weights"):
@@ -112,7 +113,7 @@ class CustomLoader(BaseModelLoader):
 
         # 현재 TP rank / world 크기
         world_size = get_tensor_model_parallel_world_size()
-        half = world_size // 2 # 일단 단순히 더 쪼갠 크기만큼 나눔
+        half = world_size // 2 # ────────────일단 단순히 더 쪼갠 크기만큼 나눔────────────
 
         # ── rank별로 가져올 shard 태그 결정 ──────────────────────────
         if rank < half:                                   # rank 0~(half-1)
@@ -138,6 +139,42 @@ class CustomLoader(BaseModelLoader):
                                      allow_pattern=[file_pattern])
             else:
                 filepaths += glob.glob(pattern)
+
+        # 로컬에 없는 shard(tag) → Ray로 다른 노드에서 가져오기
+        missing_tags = [
+            tag for tag in desired_tags
+            if not any(f"/{tag[:-1]}" in p and p.endswith(f"{tag[-1]}") for p in filepaths)
+        ]
+        if missing_tags:
+            @ray.remote
+            def _pull_files(dir_root: str, tag: str, pattern: str):
+                import glob, os
+                out = []
+                patt = os.path.join(dir_root, pattern.format(rank=tag, part="*"))
+                for fp in glob.glob(patt):
+                    with open(fp, "rb") as f:
+                        out.append((os.path.basename(fp), f.read()))
+                return out
+     
+            pulled = []
+            for tag in missing_tags:
+                futures = [
+                    _pull_files.options(resources={n["NodeManagerAddress"]: 0.01})
+                    .remote(local_model_path, tag, self.pattern)
+                    for n in ray.nodes()
+                ]
+                done, _ = ray.wait(futures, num_returns=1, timeout=15)
+                if done:
+                    pulled += ray.get(done[0])
+     
+            if pulled:
+                tmp_dir = tempfile.mkdtemp(prefix="remote_ckpt_")
+                for name, raw in pulled:
+                    tmp_path = os.path.join(tmp_dir, name)
+                    with open(tmp_path, "wb") as f:
+                        f.write(raw)
+                    filepaths.append(tmp_path)
+                # 필요하면 로드 끝난 뒤  shutil.rmtree(tmp_dir)
 
 
         if not filepaths:
