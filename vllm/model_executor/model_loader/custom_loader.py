@@ -104,7 +104,11 @@ class CustomLoader(BaseModelLoader):
         if hasattr(model_config, "model_weights"):
             model_weights = model_config.model_weights
         local_model_path = model_weights
+
+        # 현재 TP 환경에서의 rank를 가져옴
         rank = get_tensor_model_parallel_rank()
+
+        # 각 rank에 해당하는 weight 파일 경로 패턴을 구성
         pattern = os.path.join(
             local_model_path,
             self.pattern.format(rank=rank, part="*"),
@@ -115,17 +119,27 @@ class CustomLoader(BaseModelLoader):
             file_pattern = f"*{self.pattern.format(rank=rank, part=' * ')}"
             filepaths = s3_glob(path=local_model_path,
                                 allow_pattern=[file_pattern])
+        
+        # 해당 rank에 맞는 weight 파일 목록 찾기
         else:
             filepaths = glob.glob(pattern)
-
         if not filepaths:
+            # TODO: support un-sharded checkpoints too
             raise ValueError(
                 f"Could not find checkpoint files '{pattern}', only "
                 f"pre-sharded checkpoints are currently supported!")
-
         state_dict = self._filter_subtensors(model.state_dict())
+
+        # 각 파일을 순회하면서 분할된 tensor를 꺼냄
         for key, tensor in self.iterate_over_files(filepaths):
-            param_data = state_dict[key].data
+            # If loading with LoRA enabled, additional padding may
+            # be added to certain parameters. We only load into a
+            # narrowed view of the parameter data.
+
+            # state_dict 딕셔너리에서 특정 파라미터(key)에 해당하는 텐서 값을 꺼냄
+            param_data = state_dict[key].data # 특정 파라미터 키
+
+            # 해당 파라미터의 전체 shape를 가져옴
             param_shape = state_dict[key].shape
             for dim, size in enumerate(tensor.shape):
                 if size < param_shape[dim]:
@@ -138,14 +152,20 @@ class CustomLoader(BaseModelLoader):
                     key,
                     param_shape,
                 )
-            print("[👌] CustomLoader loading")
-            param_data.copy_(tensor)
-            state_dict.pop(key)
 
+            print("[👌] CustomLoader loading")
+
+            # tensor에 저장된 weight 값을 param_data로 in-place 복사    
+            param_data.copy_(tensor)
+
+            # state_dict 딕셔너리에서 현재 key-value 항목을 제거
+            # weight를 로딩한 key이므로, state_dict이 남아 있으면 weight가 누락된 것
+            state_dict.pop(key)
         if state_dict:
             raise ValueError(
                 f"Missing keys {tuple(state_dict)} in loaded state!")
 
+#-----------------------------------------------------------------------------------
     def iterate_over_files(
             self, paths) -> Generator[tuple[str, torch.Tensor], None, None]:
         if self.runai_model_streamer:
@@ -165,7 +185,8 @@ class CustomLoader(BaseModelLoader):
 # 분할된 파일들을 {rank}-{part} 형태로 safetensors로 저장
 
 # 변경 코드:
-# 
+# state_dict의 각 key(파라미터)별 텐서를 1/2로 나누어
+#     └─ 첫 절반 → rankX0, 두 번째 절반 → rankX1 파일에 저장
 
 
     @staticmethod
