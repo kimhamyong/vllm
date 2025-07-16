@@ -99,6 +99,7 @@ class CustomLoader(BaseModelLoader):
     def load_weights(self, model: nn.Module,
                      model_config: ModelConfig) -> None:
         from vllm.distributed import get_tensor_model_parallel_rank
+        import torch
 
         model_weights = model_config.model
         if hasattr(model_config, "model_weights"):
@@ -108,21 +109,21 @@ class CustomLoader(BaseModelLoader):
         # 현재 TP 환경에서의 rank를 가져옴
         rank = get_tensor_model_parallel_rank()
 
-        # 각 rank에 해당하는 weight 파일 경로 패턴을 구성
-        pattern = os.path.join(
-            local_model_path,
-            self.pattern.format(rank=rank, part="*"),
-        )
-
+        # rank 당 쪼개둔 묶음을 모두 읽도록 수정
         filepaths = []
-        if is_s3(local_model_path):
-            file_pattern = f"*{self.pattern.format(rank=rank, part=' * ')}"
-            filepaths = s3_glob(path=local_model_path,
-                                allow_pattern=[file_pattern])
-        
-        # 해당 rank에 맞는 weight 파일 목록 찾기
-        else:
-            filepaths = glob.glob(pattern)
+        for tag in (f"{rank}0", f"{rank}1"):
+            pattern = os.path.join(
+                local_model_path,
+                self.pattern.format(rank=tag, part="*"),
+            )
+            if is_s3(local_model_path):
+                file_pattern = f"*{self.pattern.format(rank=tag, part=' * ')}"
+                filepaths += s3_glob(path=local_model_path,
+                                     allow_pattern=[file_pattern])
+            else:
+                filepaths += glob.glob(pattern)
+
+
         if not filepaths:
             # TODO: support un-sharded checkpoints too
             raise ValueError(
@@ -130,8 +131,19 @@ class CustomLoader(BaseModelLoader):
                 f"pre-sharded checkpoints are currently supported!")
         state_dict = self._filter_subtensors(model.state_dict())
 
+        temp_parts = {}   # 첫 번째 절반 보관용
+
         # 각 파일을 순회하면서 분할된 tensor를 꺼냄
         for key, tensor in self.iterate_over_files(filepaths):
+
+            # 두 파일을 합쳐서 로드
+            if key in state_dict and tensor.shape != state_dict[key].shape:
+                if key not in temp_parts:
+                    temp_parts[key] = tensor
+                    continue
+                else:
+                    tensor = torch.cat([temp_parts.pop(key), tensor], dim=-1)
+
             # If loading with LoRA enabled, additional padding may
             # be added to certain parameters. We only load into a
             # narrowed view of the parameter data.
