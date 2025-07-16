@@ -201,14 +201,12 @@ class CustomLoader(BaseModelLoader):
 
             # 각 텐서를 2등분
             if len(tensor.shape) >= 1 and tensor.shape[-1] >= 2:
-                dim = -1  # 마지막 차원
-                size = tensor.shape[dim]
-                split_point = size // 2
+                # torch.split을 사용하여 contiguous한 텐서 생성
+                split_size = tensor.shape[-1] // 2
+                remaining_size = tensor.shape[-1] - split_size
             
-                # 첫 번째 절반
-                first_half = tensor.narrow(dim, 0, split_point)
-                # 두 번째 절반
-                second_half = tensor.narrow(dim, split_point, size - split_point)
+                # 첫 번째 절반과 두 번째 절반으로 분할
+                first_half, second_half = torch.split(tensor, [split_size, remaining_size], dim=-1)
             
                 # 텐서가 몇 바이트를 차지하는지 계산
                 param_size_0 = first_half.nelement() * first_half.element_size()
@@ -249,7 +247,8 @@ class CustomLoader(BaseModelLoader):
             
             else:
                 # 분할할 수 없는 텐서는 복제
-                param_size = tensor.nelement() * tensor.element_size()
+                tensor_contiguous = tensor.contiguous()
+                param_size = tensor_contiguous.nelement() * tensor_contiguous.element_size()
             
                 # 저장할 텐서를 추가했을 때, 설정된 최대 파일 크기를 초과하는지 확인
                 if max_size is not None and total_size + param_size > max_size: # total_size: 누적 크기
@@ -279,8 +278,8 @@ class CustomLoader(BaseModelLoader):
                     state_dict_part_1 = {}
 
                 # 현재 순회 중인 텐서를 양쪽 모두에 추가 (복제)
-                state_dict_part_0[key] = tensor
-                state_dict_part_1[key] = tensor
+                state_dict_part_0[key] = tensor_contiguous
+                state_dict_part_1[key] = tensor_contiguous
                 # 이 텐서의 바이트 수를 현재 파일에 누적된 용량에 더함
                 total_size += param_size
 
