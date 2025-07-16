@@ -14,7 +14,7 @@ from vllm.config import LoadConfig, ModelConfig
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.base_loader import BaseModelLoader
 from vllm.model_executor.model_loader.weight_utils import (
-    download_weights_from_hf)
+    download_weights_from_hf, runai_safetensors_weights_iterator)
 from vllm.transformers_utils.s3_utils import glob as s3_glob
 from vllm.transformers_utils.utils import is_s3
 
@@ -28,9 +28,12 @@ class CustomLoader(BaseModelLoader):
 
     DEFAULT_PATTERN = "model-rank-{rank}-part-{part}.safetensors"
 
-    def __init__(self, load_config: LoadConfig):
+    def __init__(self,
+                 load_config: LoadConfig,
+                 runai_model_streamer: bool = False):
         super().__init__(load_config)
 
+        self.runai_model_streamer = runai_model_streamer
         extra_config = ({} if load_config.model_loader_extra_config is None
                         else load_config.model_loader_extra_config.copy())
         self.pattern = extra_config.pop("pattern", self.DEFAULT_PATTERN)
@@ -139,12 +142,15 @@ class CustomLoader(BaseModelLoader):
 
     def iterate_over_files(
             self, paths) -> Generator[tuple[str, torch.Tensor], None, None]:
-        from safetensors.torch import safe_open
-        for path in paths:
-            with safe_open(path, framework="pt") as f:
-                for key in f.keys():
-                    tensor = f.get_tensor(key)
-                    yield key, tensor
+        if self.runai_model_streamer:
+            yield from runai_safetensors_weights_iterator(paths, True)
+        else:
+            from safetensors.torch import safe_open
+            for path in paths:
+                with safe_open(path, framework="pt") as f:
+                    for key in f.keys():  # noqa: SIM118
+                        tensor = f.get_tensor(key)
+                        yield key, tensor
 
     @staticmethod
     def save_model(
