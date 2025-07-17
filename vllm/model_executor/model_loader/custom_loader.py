@@ -236,7 +236,7 @@ class CustomLoader(BaseModelLoader):
         temp_parts = {}   # 첫 번째 절반 보관용
 
         # 각 파일을 순회하면서 분할된 tensor를 꺼냄
-        for key, tensor in self.iterate_over_files(filepaths):
+        for key, tensor in self.iterate_over_files(filepaths, rank):
 
             # state_dict에 키가 없으면 스킵    
             if key not in state_dict:
@@ -291,7 +291,7 @@ class CustomLoader(BaseModelLoader):
 
 #-----------------------------------------------------------------------------------
     def iterate_over_files(
-            self, paths) -> Generator[tuple[str, torch.Tensor], None, None]:
+            self, paths, rank) -> Generator[tuple[str, torch.Tensor], None, None]:
         if self.runai_model_streamer:
             yield from runai_safetensors_weights_iterator(paths, True)
         else:
