@@ -144,12 +144,19 @@ class CustomLoader(BaseModelLoader):
                 filepaths += glob.glob(pattern)
 
         # 로컬에 없는 shard(tag) → Ray로 다른 노드에서 가져오기
-        missing_tags = [
-            tag for tag in desired_tags
-            if not any(f"/{tag[:-1]}" in p and p.endswith(f"{tag[-1]}") for p in filepaths)
-        ]
+        missing_tags = []
+        for tag in desired_tags:
+            pattern = os.path.join(
+                local_model_path,
+                self.pattern.format(rank=tag, part="*"),
+            )
+            found = glob.glob(pattern)          # ← 이미 한 번 쓴 코드 재사용
+            filepaths += found                  # 있으면 filepaths 에 추가
+            if not found:                       # 없으면 ‘진짜로’ missing
+                missing_tags.append(tag)
+
         if missing_tags:
-            @ray.remote(num_cpus=0, num_gpus=0.01)
+            @ray.remote(num_cpus=0)
             def _pull_files(dir_root: str, tag: str, pattern: str):
                 import glob, os
                 out = []
@@ -163,13 +170,16 @@ class CustomLoader(BaseModelLoader):
             for tag in missing_tags:
                 print(f"🅾️[Rank {rank}] Searching for missing tag: {tag}")
                 futures = [
-                    _pull_files.remote(local_model_path, tag, self.pattern)
+                    _pull_files.options(
+                        placement_group=None,      # PG 무시
+                        scheduling_strategy="SPREAD"   # 아무 노드나 분산 실행
+                    ).remote(local_model_path, tag, self.pattern)
                     for _ in range(len(ray.nodes()))
                 ]
                 done, _ = ray.wait(futures, num_returns=1, timeout=15)
                 if done:
-                    print(f"✅[Rank {rank}] Tag {tag}: Got {len(result)} files")
                     pulled += ray.get(done[0])
+                    print(f"✅[Rank {rank}] Tag {tag}: Got {len(ray.get(done[0]))} files")
 
                     for future in futures:
                         if future not in done:
