@@ -127,6 +127,8 @@ class CustomLoader(BaseModelLoader):
                 f"{rank}1",                               # 자기 1번만
             )
 
+        print(f"🅾️[Rank {rank}] Desired tags: {desired_tags}")
+
         filepaths = []
         for tag in desired_tags:
             pattern = os.path.join(
@@ -138,6 +140,7 @@ class CustomLoader(BaseModelLoader):
                 filepaths += s3_glob(path=local_model_path,
                                      allow_pattern=[file_pattern])
             else:
+                print(f"🅾️[Rank {rank}] Tag {tag} found files: {found_files}")
                 filepaths += glob.glob(pattern)
 
         # 로컬에 없는 shard(tag) → Ray로 다른 노드에서 가져오기
@@ -158,6 +161,7 @@ class CustomLoader(BaseModelLoader):
      
             pulled = []
             for tag in missing_tags:
+                print(f"🅾️[Rank {rank}] Searching for missing tag: {tag}")
                 futures = [
                     _pull_files.remote(local_model_path, tag, self.pattern)
                     for _ in range(len(ray.nodes()))
