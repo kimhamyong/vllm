@@ -160,57 +160,47 @@ class CustomLoader(BaseModelLoader):
             def _pull_files(dir_root: str, tag: str, pattern: str):
                 import glob, os, socket
 
-                node_ip = socket.gethostbyname(socket.gethostname())
-
-                out = []
+                ip   = socket.gethostbyname(socket.gethostname())   # 실행 노드 IP
                 patt = os.path.join(dir_root, pattern.format(rank=tag, part="*"))
-
-                # 실행 노드 정보를 결과에 포함
-                execution_info = f"[Ray Node {node_ip}] Pattern: {patt}"
-
-                for fp in glob.glob(patt):
-                    with open(fp, "rb") as f:
-                        out.append((os.path.basename(fp), f.read()))
-                        print(f"✅[Ray Node {node_ip}] Successfully read: {os.path.basename(fp)}")
-                        debug_info["files_found"].append(os.path.basename(fp))
-                return [(execution_info, b"")] + out
-
+                files = [(os.path.basename(fp), open(fp, "rb").read())
+                        for fp in glob.glob(patt)]
+                if files:
+                    print(f"✅[Ray {ip}] {len(files)} file(s) matched {patt}")
+                else:
+                    print(f"❌[Ray {ip}] no file for {patt}")
+                return {"ip": ip, "files": files}
+     
             pulled = []
             for tag in missing_tags:
-                print(f"🅾️[Rank {rank}] Searching for missing tag: {tag}")
+                print(f"🅾️[Rank {rank}] Searching tag {tag} on every node")
+
                 futures = [
                     _pull_files.options(
-                        placement_group=None,      # PG 바인딩 없이
-                        scheduling_strategy="SPREAD"   # 아무 노드나 분산 실행
+                        placement_group=None,
+                        num_cpus=0,
+                        scheduling_strategy={
+                            "type": "NODE_AFFINITY",
+                            "node_id": n["NodeID"],   # 해당 노드에서 실행
+                            "soft": True,             # 자리 없으면 다른 노드 허용
+                        },
                     ).remote(local_model_path, tag, self.pattern)
-                    for _ in range(len(ray.nodes()))
+                    for n in ray.nodes()
                 ]
-                done, _ = ray.wait(futures, num_returns=1, timeout=15)
-                if done:
-                    result, debug_info = ray.get(done[0]) # 한 번만 get 시행
 
-                    # 첫 번째 요소에서 실행 노드 정보 추출
-                    if result and result[0][0].startswith("[Ray Node"):
-                        print(f"🌐{result[0][0]}")  # Ray 노드 정보 출력
-                        actual_result = result[1:]  # 실제 파일 데이터
+                results = ray.get(futures)
+                found_any = False
+                for res in results:
+                    ip    = res["ip"]
+                    files = res["files"]
+                    if files:
+                        names = [n for n, _ in files]
+                        print(f"🌐[node {ip}] FOUND {names}")
+                        pulled.extend(files)
+                        found_any = True
                     else:
-                        actual_result = result
-
-                    if not result: # 빈 리스트 처리
-                        print(f"❌[Rank {rank}] Tag {tag}: Remote node had no files")
-                    else:
-                        file_names = [name for name, _ in result]
-                        sizes = [len(raw) for _, raw in result]
-                        print(f"✅[Rank {rank}] Tag {tag}: {len(result)} file(s) pulled → {list(zip(file_names, sizes))}")
-                    
-                    pulled += result
-
-                    # 실행된 테스크 제외 나머지 취소
-                    for future in futures:
-                        if future not in done:
-                            ray.cancel(future)
-                else:
-                    print(f"❌[Rank {rank}] Tag {tag}: No files found")
+                        print(f"🌐[node {ip}] no file")
+                if not found_any:
+                    print(f"❌[Rank {rank}] Tag {tag}: not found on ANY node")
      
             if pulled:
                 tmp_dir = tempfile.mkdtemp(prefix=f"remote_ckpt_rank{rank}_")
