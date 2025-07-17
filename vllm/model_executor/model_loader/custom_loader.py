@@ -233,6 +233,9 @@ class CustomLoader(BaseModelLoader):
                 f"pre-sharded checkpoints are currently supported!")
         state_dict = self._filter_subtensors(model.state_dict())
 
+        # 모델 총 파라미터 수 계산
+        total_params = sum(param.numel() for param in state_dict.values())
+
         temp_parts = {}   # 첫 번째 절반 보관용
 
         # 각 파일을 순회하면서 분할된 tensor를 꺼냄
@@ -257,6 +260,9 @@ class CustomLoader(BaseModelLoader):
                         continue
                     else:
                         tensor = torch.cat([temp_parts.pop(key), tensor], dim=-1)
+
+            # 로드된 파라미터 누적
+            loaded_params += tensor.numel()
 
             # If loading with LoRA enabled, additional padding may
             # be added to certain parameters. We only load into a
@@ -285,6 +291,10 @@ class CustomLoader(BaseModelLoader):
             # state_dict 딕셔너리에서 현재 key-value 항목을 제거
             # weight를 로딩한 key이므로, state_dict이 남아 있으면 weight가 누락된 것
             state_dict.pop(key)
+
+        # 로딩 완료 후 rank 별 파라미터 출력
+        logger.info(f"✔️[Rank {rank}] Loaded {loaded_params:,} / {total_params:,} params ({loaded_params/total_params*100:.1f}%)")
+
         if state_dict:
             raise ValueError(
                 f"Missing keys {tuple(state_dict)} in loaded state!")
