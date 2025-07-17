@@ -297,7 +297,7 @@ class CustomLoader(BaseModelLoader):
         else:
             from safetensors.torch import safe_open
             for path in paths:
-                logger.debug(f"☑️[Rank {rank}] Trying to open file: {path}")
+                logger.info(f"☑️[Rank {rank}] Trying to open file: {path}")
                 with safe_open(path, framework="pt") as f:
                     for key in f.keys():  # noqa: SIM118
                         tensor = f.get_tensor(key)
