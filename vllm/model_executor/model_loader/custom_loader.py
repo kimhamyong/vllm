@@ -140,8 +140,8 @@ class CustomLoader(BaseModelLoader):
                 filepaths += s3_glob(path=local_model_path,
                                      allow_pattern=[file_pattern])
             else:
-                print(f"🅰️[Rank {rank}] Tag {tag} found files: {filepaths}")
                 filepaths += glob.glob(pattern)
+                print(f"🅰️[Rank {rank}] Tag {tag} found files: {filepaths}")
 
         # 로컬에 없는 shard(tag) → Ray로 다른 노드에서 가져오기
         missing_tags = []
