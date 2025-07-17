@@ -171,16 +171,24 @@ class CustomLoader(BaseModelLoader):
                 print(f"🅾️[Rank {rank}] Searching for missing tag: {tag}")
                 futures = [
                     _pull_files.options(
-                        placement_group=None,      # PG 무시
+                        placement_group=None,      # PG 바인딩 없이
                         scheduling_strategy="SPREAD"   # 아무 노드나 분산 실행
                     ).remote(local_model_path, tag, self.pattern)
                     for _ in range(len(ray.nodes()))
                 ]
                 done, _ = ray.wait(futures, num_returns=1, timeout=15)
                 if done:
-                    pulled += ray.get(done[0])
-                    print(f"✅[Rank {rank}] Tag {tag}: Got {len(ray.get(done[0]))} files")
+                    result = ray.get(done[0]) # 한 번만 get 시행
+                    if not result: # 빈 리스트 처리
+                        print(f"❌[Rank {rank}] Tag {tag}: Remote node had no files")
+                    else:
+                        file_names = [name for name, _ in result]
+                        sizes = [len(raw) for _, raw in result]
+                        print(f"✅[Rank {rank}] Tag {tag}: {len(result)} file(s) pulled → {list(zip(file_names, sizes))}")
+                    
+                    pulled += result
 
+                    # 실행된 테스크 제외 나머지 취소
                     for future in futures:
                         if future not in done:
                             ray.cancel(future)
@@ -188,15 +196,24 @@ class CustomLoader(BaseModelLoader):
                     print(f"❌[Rank {rank}] Tag {tag}: No files found")
      
             if pulled:
-                tmp_dir = tempfile.mkdtemp(prefix="remote_ckpt_")
+                tmp_dir = tempfile.mkdtemp(prefix=f"remote_ckpt_rank{rank}_")
+                print(f"✅[Rank {rank}] Saving pulled files to tmp_dir={tmp_dir}")
+
                 for name, raw in pulled:
                     tmp_path = os.path.join(tmp_dir, name)
+
+                    # 동일 파일 중복 방지
+                    if tmp_path in filepaths:
+                        print(f"❌[Rank {rank}] Duplicate {name} skipped")
+                        continue
+
                     with open(tmp_path, "wb") as f:
                         f.write(raw)
                     filepaths.append(tmp_path)
                     print(f"✅[Rank {rank}] Saved: {name}")
-                # 필요하면 로드 끝난 뒤  shutil.rmtree(tmp_dir)
-
+                
+                # 로드가 끝난 뒤 임시 디렉터리 삭제하고 싶다면:
+                # shutil.rmtree(tmp_dir, ignore_errors=True)
 
         if not filepaths:
             # TODO: support un-sharded checkpoints too
