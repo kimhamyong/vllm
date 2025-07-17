@@ -18,6 +18,7 @@ from vllm.model_executor.model_loader.weight_utils import (
 from vllm.transformers_utils.s3_utils import glob as s3_glob
 from vllm.transformers_utils.utils import is_s3
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+import shutil
 
 logger = init_logger(__name__)
 
@@ -105,6 +106,9 @@ class CustomLoader(BaseModelLoader):
         import ray, tempfile, os, glob, shutil
 
         model_weights = model_config.model
+
+        print("[👌] CustomLoader loading")
+
         if hasattr(model_config, "model_weights"):
             model_weights = model_config.model_weights
         local_model_path = model_weights
@@ -219,8 +223,8 @@ class CustomLoader(BaseModelLoader):
                     filepaths.append(tmp_path)
                     print(f"✅[Rank {rank}] Saved: {name}")
                 
-                # 로드가 끝난 뒤 임시 디렉터리 삭제하고 싶다면:
-                # shutil.rmtree(tmp_dir, ignore_errors=True)
+                # 로드가 끝난 뒤 임시 디렉터리 삭제
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
         if not filepaths:
             # TODO: support un-sharded checkpoints too
@@ -274,8 +278,6 @@ class CustomLoader(BaseModelLoader):
                     key,
                     param_shape,
                 )
-
-            print("[👌] CustomLoader loading")
 
             # tensor에 저장된 weight 값을 param_data로 in-place 복사    
             param_data.copy_(tensor)
