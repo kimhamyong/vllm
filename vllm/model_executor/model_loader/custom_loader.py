@@ -165,18 +165,15 @@ class CustomLoader(BaseModelLoader):
                 out = []
                 patt = os.path.join(dir_root, pattern.format(rank=tag, part="*"))
 
-                debug_info = {
-                    "node_ip": node_ip,
-                    "pattern": patt,
-                    "files_found": []
-                }
-                
+                # 실행 노드 정보를 결과에 포함
+                execution_info = f"[Ray Node {node_ip}] Pattern: {patt}"
+
                 for fp in glob.glob(patt):
                     with open(fp, "rb") as f:
                         out.append((os.path.basename(fp), f.read()))
                         print(f"✅[Ray Node {node_ip}] Successfully read: {os.path.basename(fp)}")
                         debug_info["files_found"].append(os.path.basename(fp))
-                return (out, debug_info)
+                return [(execution_info, b"")] + out
 
             pulled = []
             for tag in missing_tags:
@@ -192,9 +189,12 @@ class CustomLoader(BaseModelLoader):
                 if done:
                     result, debug_info = ray.get(done[0]) # 한 번만 get 시행
 
-                    print(f"🔍[Rank {rank}] Tag {tag}: Executed on node {debug_info['node_ip']}")
-                    print(f"🔍[Rank {rank}] Tag {tag}: Search pattern {debug_info['pattern']}")
-                    print(f"🔍[Rank {rank}] Tag {tag}: Found files {debug_info['files_found']}")
+                    # 첫 번째 요소에서 실행 노드 정보 추출
+                    if result and result[0][0].startswith("[Ray Node"):
+                        print(f"🌐{result[0][0]}")  # Ray 노드 정보 출력
+                        actual_result = result[1:]  # 실제 파일 데이터
+                    else:
+                        actual_result = result
 
                     if not result: # 빈 리스트 처리
                         print(f"❌[Rank {rank}] Tag {tag}: Remote node had no files")
