@@ -75,7 +75,7 @@ class CustomLoader(BaseModelLoader):
                 else:
                     result[k] = t
         return result
-
+#-----------------------------------------------------------------------------------
     def _prepare_weights(self, model_name_or_path: str,
                          revision: Optional[str]):
         if is_s3(model_name_or_path) or os.path.isdir(model_name_or_path):
@@ -337,6 +337,12 @@ class CustomLoader(BaseModelLoader):
                 state_dict_part_1[key] = tensor.contiguous()
                 param_size = tensor.nelement() * tensor.element_size()
                 total_size += param_size
+                continue
+
+                if not logged_lm_head:          # 한 rank에서 1번만 출력
+                    print(f"[CHECK][rank {rank}] lm_head.weight duplicated "
+                        f"→ will be in {rank}0 / {rank}1")
+                    logged_lm_head = True
                 continue
 
             # 각 텐서를 2등분
