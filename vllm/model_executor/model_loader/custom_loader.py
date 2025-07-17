@@ -150,7 +150,7 @@ class CustomLoader(BaseModelLoader):
                 local_model_path,
                 self.pattern.format(rank=tag, part="*"),
             )
-            found = glob.glob(pattern)          # ← 이미 한 번 쓴 코드 재사용
+            found = glob.glob(pattern)          # 이미 한 번 쓴 코드 재사용
             filepaths += found                  # 있으면 filepaths 에 추가
             if not found:                       # 없으면 ‘진짜로’ missing
                 missing_tags.append(tag)
@@ -164,15 +164,20 @@ class CustomLoader(BaseModelLoader):
 
                 out = []
                 patt = os.path.join(dir_root, pattern.format(rank=tag, part="*"))
-                print(f"🔍[Ray Node {node_ip}] Pattern: {patt}")
-                
 
+                debug_info = {
+                    "node_ip": node_ip,
+                    "pattern": patt,
+                    "files_found": []
+                }
+                
                 for fp in glob.glob(patt):
                     with open(fp, "rb") as f:
                         out.append((os.path.basename(fp), f.read()))
                         print(f"✅[Ray Node {node_ip}] Successfully read: {os.path.basename(fp)}")
-                return out
-     
+                        debug_info["files_found"].append(os.path.basename(fp))
+                return (out, debug_info)
+
             pulled = []
             for tag in missing_tags:
                 print(f"🅾️[Rank {rank}] Searching for missing tag: {tag}")
@@ -185,7 +190,12 @@ class CustomLoader(BaseModelLoader):
                 ]
                 done, _ = ray.wait(futures, num_returns=1, timeout=15)
                 if done:
-                    result = ray.get(done[0]) # 한 번만 get 시행
+                    result, debug_info = ray.get(done[0]) # 한 번만 get 시행
+
+                    print(f"🔍[Rank {rank}] Tag {tag}: Executed on node {debug_info['node_ip']}")
+                    print(f"🔍[Rank {rank}] Tag {tag}: Search pattern {debug_info['pattern']}")
+                    print(f"🔍[Rank {rank}] Tag {tag}: Found files {debug_info['files_found']}")
+
                     if not result: # 빈 리스트 처리
                         print(f"❌[Rank {rank}] Tag {tag}: Remote node had no files")
                     else:
