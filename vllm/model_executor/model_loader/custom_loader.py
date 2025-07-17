@@ -331,6 +331,14 @@ class CustomLoader(BaseModelLoader):
         # state_dict 순회하면서 파일 분할 저장
         for key, tensor in state_dict.items():
 
+            if key == "lm_head.weight":
+                # 두 파일(0·1) 모두에 원본 그대로 복사
+                state_dict_part_0[key] = tensor.contiguous()
+                state_dict_part_1[key] = tensor.contiguous()
+                param_size = tensor.nelement() * tensor.element_size()
+                total_size += param_size
+                continue
+
             # 각 텐서를 2등분
             if len(tensor.shape) >= 1 and tensor.shape[-1] >= 2:
                 # torch.split을 사용하여 contiguous한 텐서 생성
