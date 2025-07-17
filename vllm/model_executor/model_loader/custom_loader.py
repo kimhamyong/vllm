@@ -238,6 +238,8 @@ class CustomLoader(BaseModelLoader):
 
         temp_parts = {}   # 첫 번째 절반 보관용
 
+        loaded_params = 0 
+
         # 각 파일을 순회하면서 분할된 tensor를 꺼냄
         for key, tensor in self.iterate_over_files(filepaths, rank):
 
