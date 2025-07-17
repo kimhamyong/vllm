@@ -17,6 +17,7 @@ from vllm.model_executor.model_loader.weight_utils import (
     download_weights_from_hf, runai_safetensors_weights_iterator)
 from vllm.transformers_utils.s3_utils import glob as s3_glob
 from vllm.transformers_utils.utils import is_s3
+from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 logger = init_logger(__name__)
 
@@ -159,7 +160,6 @@ class CustomLoader(BaseModelLoader):
             @ray.remote(num_cpus=0)
             def _pull_files(dir_root: str, tag: str, pattern: str):
                 import glob, os, socket
-                from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
                 ip   = socket.gethostbyname(socket.gethostname())   # 실행 노드 IP
                 patt = os.path.join(dir_root, pattern.format(rank=tag, part="*"))
