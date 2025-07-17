@@ -159,6 +159,7 @@ class CustomLoader(BaseModelLoader):
             @ray.remote(num_cpus=0)
             def _pull_files(dir_root: str, tag: str, pattern: str):
                 import glob, os, socket
+                from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
                 ip   = socket.gethostbyname(socket.gethostname())   # 실행 노드 IP
                 patt = os.path.join(dir_root, pattern.format(rank=tag, part="*"))
