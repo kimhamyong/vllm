@@ -295,7 +295,11 @@ class CustomLoader(BaseModelLoader):
             state_dict.pop(key)
 
         # 로딩 완료 후 rank 별 파라미터 출력
-        logger.info(f"✔️[Rank {rank}] Loaded {loaded_params:,} / {total_params:,} params ({loaded_params/total_params*100:.1f}%)")
+        if total_params == 0:
+            logger.warning(f"✔️[Rank {rank}] No parameters to load (total_params = 0)")
+        else:
+            logger.info(f"✔️[Rank {rank}] Loaded {loaded_params:,} / {total_params:,} params ({loaded_params/total_params*100:.1f}%)")
+
 
         if state_dict:
             raise ValueError(
