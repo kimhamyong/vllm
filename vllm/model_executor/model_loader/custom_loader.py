@@ -178,11 +178,10 @@ class CustomLoader(BaseModelLoader):
                     _pull_files.options(
                         placement_group=None,
                         num_cpus=0,
-                        scheduling_strategy={
-                            "type": "NODE_AFFINITY",
-                            "node_id": n["NodeID"],   # 해당 노드에서 실행
-                            "soft": True,             # 자리 없으면 다른 노드 허용
-                        },
+                        scheduling_strategy=NodeAffinitySchedulingStrategy(
+                           node_id=n["NodeID"],
+                           soft=True,
+                        ),
                     ).remote(local_model_path, tag, self.pattern)
                     for n in ray.nodes()
                 ]
