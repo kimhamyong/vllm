@@ -234,13 +234,25 @@ class CustomLoader(BaseModelLoader):
         # 각 파일을 순회하면서 분할된 tensor를 꺼냄
         for key, tensor in self.iterate_over_files(filepaths):
 
+            # state_dict에 키가 없으면 스킵    
+            if key not in state_dict:
+            continue
+
             # 두 파일을 합쳐서 로드
             if key in state_dict and tensor.shape != state_dict[key].shape:
-                if key not in temp_parts:
-                    temp_parts[key] = tensor
-                    continue
+                # lm_head.weight는 두 파일에 동일하게 저장되어 있으므로 concat하지 않음
+                if key == "lm_head.weight":
+                    # 첫 번째 것만 사용하고 두 번째는 무시
+                    if key in temp_parts:
+                        continue  # 이미 처리했으므로 스킵
+                    temp_parts[key] = tensor  # 첫 번째만 보관
+                    tensor = temp_parts.pop(key)  # 바로 사용
                 else:
-                    tensor = torch.cat([temp_parts.pop(key), tensor], dim=-1)
+                    if key not in temp_parts:
+                        temp_parts[key] = tensor
+                        continue
+                    else:
+                        tensor = torch.cat([temp_parts.pop(key), tensor], dim=-1)
 
             # If loading with LoRA enabled, additional padding may
             # be added to certain parameters. We only load into a
