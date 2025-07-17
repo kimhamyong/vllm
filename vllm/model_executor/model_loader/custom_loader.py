@@ -148,8 +148,6 @@ class CustomLoader(BaseModelLoader):
                 filepaths += glob.glob(pattern)
                 print(f"🅰️[Rank {rank}] Tag {tag} found files: {filepaths}")
 
-        print(f"☑️[Rank {rank}] Filepaths after file search: {filepaths}")
-
         # 로컬에 없는 shard(tag) → Ray로 다른 노드에서 가져오기
         missing_tags = []
         for tag in desired_tags:
@@ -299,6 +297,7 @@ class CustomLoader(BaseModelLoader):
         else:
             from safetensors.torch import safe_open
             for path in paths:
+                logger.debug(f"☑️[Rank {rank}] Trying to open file: {path}")
                 with safe_open(path, framework="pt") as f:
                     for key in f.keys():  # noqa: SIM118
                         tensor = f.get_tensor(key)
