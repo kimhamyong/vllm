@@ -224,7 +224,7 @@ class CustomLoader(BaseModelLoader):
                     print(f"✅[Rank {rank}] Saved: {name}")
                 
                 # 로드가 끝난 뒤 임시 디렉터리 삭제
-                shutil.rmtree(tmp_dir, ignore_errors=True)
+                # shutil.rmtree(tmp_dir, ignore_errors=True)
 
         if not filepaths:
             # TODO: support un-sharded checkpoints too
