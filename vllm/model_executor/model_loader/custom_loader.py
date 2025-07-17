@@ -158,12 +158,19 @@ class CustomLoader(BaseModelLoader):
         if missing_tags:
             @ray.remote(num_cpus=0)
             def _pull_files(dir_root: str, tag: str, pattern: str):
-                import glob, os
+                import glob, os, socket
+
+                node_ip = socket.gethostbyname(socket.gethostname())
+
                 out = []
                 patt = os.path.join(dir_root, pattern.format(rank=tag, part="*"))
+                print(f"🔍[Ray Node {node_ip}] Pattern: {patt}")
+                
+
                 for fp in glob.glob(patt):
                     with open(fp, "rb") as f:
                         out.append((os.path.basename(fp), f.read()))
+                        print(f"✅[Ray Node {node_ip}] Successfully read: {os.path.basename(fp)}")
                 return out
      
             pulled = []
