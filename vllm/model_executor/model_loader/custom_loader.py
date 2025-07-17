@@ -168,11 +168,14 @@ class CustomLoader(BaseModelLoader):
                 ]
                 done, _ = ray.wait(futures, num_returns=1, timeout=15)
                 if done:
+                    print(f"✅[Rank {rank}] Tag {tag}: Got {len(result)} files")
                     pulled += ray.get(done[0])
 
                     for future in futures:
                         if future not in done:
                             ray.cancel(future)
+                else:
+                    print(f"❌[Rank {rank}] Tag {tag}: No files found")
      
             if pulled:
                 tmp_dir = tempfile.mkdtemp(prefix="remote_ckpt_")
@@ -181,6 +184,7 @@ class CustomLoader(BaseModelLoader):
                     with open(tmp_path, "wb") as f:
                         f.write(raw)
                     filepaths.append(tmp_path)
+                    print(f"✅[Rank {rank}] Saved: {name}")
                 # 필요하면 로드 끝난 뒤  shutil.rmtree(tmp_dir)
 
 
