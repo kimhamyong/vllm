@@ -146,7 +146,7 @@ class CustomLoader(BaseModelLoader):
             if not any(f"/{tag[:-1]}" in p and p.endswith(f"{tag[-1]}") for p in filepaths)
         ]
         if missing_tags:
-            @ray.remote
+            @ray.remote(num_gpus=0.01)
             def _pull_files(dir_root: str, tag: str, pattern: str):
                 import glob, os
                 out = []
@@ -162,7 +162,7 @@ class CustomLoader(BaseModelLoader):
                     _pull_files.remote(local_model_path, tag, self.pattern)
                     for _ in range(len(ray.nodes()))
                 ]
-                done, _ = ray.wait(futures, num_returns=1, timeout=30)
+                done, _ = ray.wait(futures, num_returns=1, timeout=15)
                 if done:
                     pulled += ray.get(done[0])
 
