@@ -159,13 +159,16 @@ class CustomLoader(BaseModelLoader):
             pulled = []
             for tag in missing_tags:
                 futures = [
-                    _pull_files.options(resources={n["NodeManagerAddress"]: 0.01})
-                    .remote(local_model_path, tag, self.pattern)
-                    for n in ray.nodes()
+                    _pull_files.remote(local_model_path, tag, self.pattern)
+                    for _ in range(len(ray.nodes()))
                 ]
-                done, _ = ray.wait(futures, num_returns=1, timeout=15)
+                done, _ = ray.wait(futures, num_returns=1, timeout=30)
                 if done:
                     pulled += ray.get(done[0])
+
+                    for future in futures:
+                        if future not in done:
+                            ray.cancel(future)
      
             if pulled:
                 tmp_dir = tempfile.mkdtemp(prefix="remote_ckpt_")
