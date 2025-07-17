@@ -146,7 +146,7 @@ class CustomLoader(BaseModelLoader):
             if not any(f"/{tag[:-1]}" in p and p.endswith(f"{tag[-1]}") for p in filepaths)
         ]
         if missing_tags:
-            @ray.remote(num_gpus=0.01)
+            @ray.remote(num_cpus=0, num_gpus=0.01)
             def _pull_files(dir_root: str, tag: str, pattern: str):
                 import glob, os
                 out = []
