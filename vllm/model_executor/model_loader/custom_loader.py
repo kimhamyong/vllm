@@ -236,7 +236,7 @@ class CustomLoader(BaseModelLoader):
 
             # state_dict에 키가 없으면 스킵    
             if key not in state_dict:
-            continue
+                continue
 
             # 두 파일을 합쳐서 로드
             if key in state_dict and tensor.shape != state_dict[key].shape:
