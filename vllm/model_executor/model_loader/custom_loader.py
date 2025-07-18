@@ -149,23 +149,20 @@ class CustomLoader(BaseModelLoader):
                 found = glob.glob(pattern)
                 filepaths += found
                 print(f"🅰️[Rank {rank}] Tag {tag} found files: {filepaths}")
-                if not found:                       # 없으면 missing
-                    missing_tags.append(tag)
-                    print(f"🔵[Rank {rank}] missing_tags {tag}")
-
+                
         # 로컬에 없는 shard(tag) 추가 → Ray로 다른 노드에서 가져오도록
         
-        # for tag in desired_tags:
-        #     pattern = os.path.join(
-        #         local_model_path,
-        #         self.pattern.format(rank=tag, part="*"),
-        #     )
-        #     found = glob.glob(pattern)          # 이미 한 번 쓴 코드 재사용
-        #     print(f"🔵[Rank {rank}] Tag {tag} filepaths: {found}")
-        #     filepaths += found                  # 있으면 filepaths 에 추가
-        #     print(f"🔽[Rank {rank}] Tag {tag} found files: {filepaths}")
-        #     if not found:                       # 없으면 missing
-        #         missing_tags.append(tag)
+        for tag in desired_tags:
+            pattern = os.path.join(
+                local_model_path,
+                self.pattern.format(rank=tag, part="*"),
+            )
+            found = glob.glob(pattern)          # 이미 한 번 쓴 코드 재사용
+            print(f"🔵[Rank {rank}] Tag {tag} filepaths: {found}")
+            filepaths += found                  # 있으면 filepaths 에 추가
+            print(f"🔽[Rank {rank}] Tag {tag} found files: {filepaths}")
+            if not found:                       # 없으면 missing
+                missing_tags.append(tag)
 
         if missing_tags:
             @ray.remote(num_cpus=0)
@@ -184,7 +181,7 @@ class CustomLoader(BaseModelLoader):
      
             pulled = []
             for tag in missing_tags:
-                print(f"🅾️[Rank {rank}] Searching tag {tag} on every node")
+                print(f"🈴[Rank {rank}] Searching tag {tag} on every node")
 
                 futures = [
                     _pull_files.options(
