@@ -205,7 +205,7 @@ class CustomLoader(BaseModelLoader):
                 for res in results:
                     ip    = res["ip"]
                     files = res["files"]
-                    print(f"😊[Rank {rank}] result {res}")
+                    # print(f"😊[Rank {rank}] result {res}")
                     if files:
                         names = [n for n, _ in files]
                         print(f"🌐[node {ip}] FOUND {names}")
