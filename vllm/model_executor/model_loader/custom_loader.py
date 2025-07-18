@@ -143,6 +143,7 @@ class CustomLoader(BaseModelLoader):
                 file_pattern = f"*{self.pattern.format(rank=tag, part=' * ')}"
                 filepaths += s3_glob(path=local_model_path,
                                      allow_pattern=[file_pattern])
+                print(f"🅱️[Rank {rank}] Tag {tag} found files: {filepaths}")
             else:
                 filepaths += glob.glob(pattern)
                 print(f"🅰️[Rank {rank}] Tag {tag} found files: {filepaths}")
@@ -158,10 +159,6 @@ class CustomLoader(BaseModelLoader):
             filepaths += found                  # 있으면 filepaths 에 추가
             if not found:                       # 없으면 ‘진짜로’ missing
                 missing_tags.append(tag)
-
-                
-        # 중복된 파일 경로 제거
-        filepaths = list(set(filepaths))
 
         if missing_tags:
             @ray.remote(num_cpus=0)
