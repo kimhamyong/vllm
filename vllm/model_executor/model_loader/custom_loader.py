@@ -163,6 +163,9 @@ class CustomLoader(BaseModelLoader):
             print(f"🔽[Rank {rank}] Tag {tag} found files: {filepaths}")
             if not found:                       # 없으면 missing
                 missing_tags.append(tag)
+                print(f"*️⃣[Rank {rank}] missing_tags {tag}")
+
+
 
         if missing_tags:
             @ray.remote(num_cpus=0)
