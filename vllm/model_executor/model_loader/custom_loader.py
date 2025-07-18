@@ -159,6 +159,10 @@ class CustomLoader(BaseModelLoader):
             if not found:                       # 없으면 ‘진짜로’ missing
                 missing_tags.append(tag)
 
+                
+        # 중복된 파일 경로 제거
+        filepaths = list(set(filepaths))
+
         if missing_tags:
             @ray.remote(num_cpus=0)
             def _pull_files(dir_root: str, tag: str, pattern: str):
@@ -224,9 +228,6 @@ class CustomLoader(BaseModelLoader):
                 
                 # 로드가 끝난 뒤 임시 디렉터리 삭제
                 # shutil.rmtree(tmp_dir, ignore_errors=True)
-        
-        # 중복된 파일 경로 제거
-        filepaths = list(set(filepaths))
 
         if not filepaths:
             # TODO: support un-sharded checkpoints too
