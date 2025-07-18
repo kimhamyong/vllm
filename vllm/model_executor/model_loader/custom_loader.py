@@ -150,22 +150,22 @@ class CustomLoader(BaseModelLoader):
                 found = glob.glob(pattern)
                 filepaths += found
                 print(f"🅰️[Rank {rank}] Tag {tag} found files: {filepaths}")
-                if not found:                       # 없으면 missing
-                    missing_tags.append(tag)
-                    print(f"*️⃣[Rank {rank}] missing_tags {tag}")
+                # if not found:                       # 없으면 missing
+                #     missing_tags.append(tag)
+                #     print(f"*️⃣[Rank {rank}] missing_tags {tag}")
         
-        # for tag in desired_tags:
-        #     pattern = os.path.join(
-        #         local_model_path,
-        #         self.pattern.format(rank=tag, part="*"),
-        #     )
-        #     found = glob.glob(pattern)          # 이미 한 번 쓴 코드 재사용
-        #     print(f"🔵[Rank {rank}] Tag {tag} filepaths: {found}")
-        #     filepaths += found                  # 있으면 filepaths 에 추가
-        #     print(f"🔽[Rank {rank}] Tag {tag} found files: {filepaths}")
-        #     if not found:                       # 없으면 missing
-        #         missing_tags.append(tag)
-        #         print(f"*️⃣[Rank {rank}] missing_tags {tag}")
+        for tag in desired_tags:
+            pattern = os.path.join(
+                local_model_path,
+                self.pattern.format(rank=tag, part="*"),
+            )
+            found = glob.glob(pattern)        
+            print(f"🔵[Rank {rank}] Tag {tag} filepaths: {found}")
+            # filepaths += found                  # 있으면 filepaths 에 추가
+            # print(f"🔽[Rank {rank}] Tag {tag} found files: {filepaths}")
+            if not found:                       # 없으면 missing
+                missing_tags.append(tag)
+                print(f"*️⃣[Rank {rank}] missing_tags {tag}")
 
 
 
