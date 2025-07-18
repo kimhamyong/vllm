@@ -199,10 +199,10 @@ class CustomLoader(BaseModelLoader):
                     ).remote(local_model_path, tag, self.pattern)
                     for n in ray.nodes()
                 ]
-                print(f"😊[Rank {rank}] futures len={len(futures)} : {[f.hex() for f in futures]}")
+                print(f"😊[Rank {rank}] futures len={len(futures)}")
 
                 results = ray.get(futures)
-                print(f"👌[Rank {rank}] ray.get (tag={tag}) -> results len={len(results)}")
+                print(f"👌[Rank {rank}] ray.get (tag={tag})")
 
                 found_any = False
                 for res in results:
