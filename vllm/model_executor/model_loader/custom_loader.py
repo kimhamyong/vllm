@@ -147,8 +147,7 @@ class CustomLoader(BaseModelLoader):
                                      allow_pattern=[file_pattern])
             else:
                 print(f"🔴[Rank {rank}] filepaths: {glob.glob(pattern)}")
-                found = glob.glob(pattern)
-                filepaths += found
+                filepaths += glob.glob(pattern)
                 print(f"🅰️[Rank {rank}] Tag {tag} found files: {filepaths}")
                 # if not found:                       # 없으면 missing
                 #     missing_tags.append(tag)
@@ -166,8 +165,6 @@ class CustomLoader(BaseModelLoader):
             if not found:                       # 없으면 missing
                 missing_tags.append(tag)
                 print(f"*️⃣[Rank {rank}] missing_tags {tag}")
-
-
 
         if missing_tags:
             @ray.remote(num_cpus=0)
@@ -199,16 +196,16 @@ class CustomLoader(BaseModelLoader):
                     ).remote(local_model_path, tag, self.pattern)
                     for n in ray.nodes()
                 ]
-                print(f"😊[Rank {rank}] futures len={len(futures)}")
+                #print(f"😊[Rank {rank}] futures len={len(futures)}")
 
                 results = ray.get(futures)
-                print(f"👌[Rank {rank}] ray.get (tag={tag})")
+                #print(f"👌[Rank {rank}] ray.get (tag={tag})")
 
                 found_any = False
                 for res in results:
                     ip    = res["ip"]
                     files = res["files"]
-                    print(f"😊[Rank {rank}] result {res}")
+                    #print(f"😊[Rank {rank}] result {res}")
                     if files:
                         names = [n for n, _ in files]
                         print(f"🌐[node {ip}] FOUND {names}")
@@ -329,10 +326,10 @@ class CustomLoader(BaseModelLoader):
 
             for path in paths:
                 logger.info(f"☑️[Rank {rank}] Trying to open file: {path}")
-                with safe_open(path, framework="pt") as f:
-                    for key in f.keys():  # noqa: SIM118
-                        tensor = f.get_tensor(key)
-                        yield key, tensor
+                    with safe_open(path, framework="pt") as f:
+                        for key in f.keys():  # noqa: SIM118
+                            tensor = f.get_tensor(key)
+                            yield key, tensor
 
 #-----------------------------------------------------------------------------------
 # 기존 코드:
