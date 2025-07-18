@@ -146,7 +146,8 @@ class CustomLoader(BaseModelLoader):
                                      allow_pattern=[file_pattern])
             else:
                 print(f"🔴[Rank {rank}] filepaths: {glob.glob(pattern)}")
-                filepaths += glob.glob(pattern)
+                found = glob.glob(pattern)
+                filepaths += found
                 print(f"🅰️[Rank {rank}] Tag {tag} found files: {filepaths}")
                 if not found:                       # 없으면 missing
                     missing_tags.append(tag)
