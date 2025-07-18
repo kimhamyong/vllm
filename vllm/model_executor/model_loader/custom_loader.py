@@ -22,7 +22,6 @@ import shutil
 
 logger = init_logger(__name__)
 
-
 class CustomLoader(BaseModelLoader):
     """
     Custom model loader (based on ShardedStateLoader).
@@ -312,8 +311,9 @@ class CustomLoader(BaseModelLoader):
             yield from runai_safetensors_weights_iterator(paths, True)
         else:
             from safetensors.torch import safe_open
+            
+            logger.info(f"☑️[Rank {rank}] Trying to open file: {path}")
             for path in paths:
-                logger.info(f"☑️[Rank {rank}] Trying to open file: {path}")
                 with safe_open(path, framework="pt") as f:
                     for key in f.keys():  # noqa: SIM118
                         tensor = f.get_tensor(key)
