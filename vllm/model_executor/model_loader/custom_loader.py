@@ -138,31 +138,22 @@ class CustomLoader(BaseModelLoader):
 
         for tag in desired_tags:
             pattern = os.path.join(
-                local_model_path,
-                self.pattern.format(rank=tag, part="*"),
+                local_model_path, 
+                self.pattern.format(rank=tag, part="*")
             )
+            
             if is_s3(local_model_path):
-                file_pattern = f"*{self.pattern.format(rank=tag, part=' * ')}"
-                filepaths += s3_glob(path=local_model_path,
-                                     allow_pattern=[file_pattern])
+                file_pattern = f"*{self.pattern.format(rank=tag, part='*')}"
+                found = s3_glob(path=local_model_path, allow_pattern=[file_pattern])
+                print(f"🔴[Rank {rank}] S3 Tag {tag} found files: {found}")
             else:
-                print(f"🔴[Rank {rank}] filepaths: {glob.glob(pattern)}")
-                filepaths += glob.glob(pattern)
-                print(f"🅰️[Rank {rank}] Tag {tag} found files: {filepaths}")
-                # if not found:                       # 없으면 missing
-                #     missing_tags.append(tag)
-                #     print(f"*️⃣[Rank {rank}] missing_tags {tag}")
-        
-        for tag in desired_tags:
-            pattern = os.path.join(
-                local_model_path,
-                self.pattern.format(rank=tag, part="*"),
-            )
-            found = glob.glob(pattern)        
-            print(f"🔵[Rank {rank}] Tag {tag} filepaths: {found}")
-            filepaths += found                  # 있으면 filepaths 에 추가
-            print(f"🔽[Rank {rank}] Tag {tag} found files: {filepaths}")
-            if not found:                       # 없으면 missing
+                found = glob.glob(pattern)
+                print(f"🔵[Rank {rank}] Local Tag {tag} found files: {found}")
+            
+            if found:
+                filepaths += found
+                print(f"🅰️[Rank {rank}] Tag {tag} total files: {len(filepaths)}")
+            else:
                 missing_tags.append(tag)
                 print(f"*️⃣[Rank {rank}] missing_tags {tag}")
 
