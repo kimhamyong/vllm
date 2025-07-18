@@ -151,6 +151,7 @@ class CustomLoader(BaseModelLoader):
                 print(f"🅰️[Rank {rank}] Tag {tag} found files: {filepaths}")
                 if not found:                       # 없으면 missing
                     missing_tags.append(tag)
+                    print(f"🔵[Rank {rank}] missing_tags {tag}")
 
         # 로컬에 없는 shard(tag) 추가 → Ray로 다른 노드에서 가져오도록
         
