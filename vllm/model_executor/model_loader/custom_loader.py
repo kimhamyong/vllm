@@ -174,7 +174,7 @@ class CustomLoader(BaseModelLoader):
      
             pulled = []
             for tag in missing_tags:
-                print(f"🈴[Rank {rank}] Searching tag {tag} on every node")
+                print(f"😊[Rank {rank}] Searching tag {tag} on every node")
 
                 futures = [
                     _pull_files.options(
@@ -187,10 +187,10 @@ class CustomLoader(BaseModelLoader):
                     ).remote(local_model_path, tag, self.pattern)
                     for n in ray.nodes()
                 ]
-                print(f"😊[Rank {rank}] {node_id}")
+                print(f"😊[Rank {rank}] futures len={len(futures)}")
 
                 results = ray.get(futures)
-                print(f"👌[Rank {rank}] ray.get (tag={tag})")
+                print(f"😊[Rank {rank}] ray.get (tag={tag})")
 
                 found_any = False
                 for res in results:
