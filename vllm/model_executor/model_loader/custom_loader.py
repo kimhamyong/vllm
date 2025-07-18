@@ -201,8 +201,17 @@ class CustomLoader(BaseModelLoader):
                 ]
                 print(f"😊[Rank {rank}] futures len={len(futures)} : {[f.hex() for f in futures]}")
 
-                results = ray.get(futures)
-                print(f"😊[Rank {rank}] ray.get (tag={tag}) -> results len={len(results)}")
+               try:
+                    # 타임아웃 설정
+                    results = ray.get(futures, timeout=60)  # 60초 타임아웃
+                    print(f"😊[Rank {rank}] ray.get (tag={tag}) -> results len={len(results)}")
+                except ray.exceptions.GetTimeoutError:
+                    print(f"❌[Rank {rank}] Ray timeout for tag {tag}")
+                    continue
+                except Exception as e:
+                    print(f"❌[Rank {rank}] Ray error for tag {tag}: {e}")
+                    continue
+
 
                 found_any = False
                 for res in results:
