@@ -201,7 +201,7 @@ class CustomLoader(BaseModelLoader):
                 ]
                 print(f"😊[Rank {rank}] futures len={len(futures)} : {[f.hex() for f in futures]}")
 
-               try:
+                try:
                     # 타임아웃 설정
                     results = ray.get(futures, timeout=60)  # 60초 타임아웃
                     print(f"😊[Rank {rank}] ray.get (tag={tag}) -> results len={len(results)}")
