@@ -201,21 +201,8 @@ class CustomLoader(BaseModelLoader):
                 ]
                 print(f"😊[Rank {rank}] futures len={len(futures)} : {[f.hex() for f in futures]}")
 
-                try:
-                    ready, not_ready = ray.wait(futures, timeout=60)
-                    print(f"😊[Rank {rank}] ray.wait completed - ready: {len(ready)}, not_ready: {len(not_ready)}")
-                    
-                    if ready:
-                        results = ray.get(ready)  # 완료된 것만 가져오기
-                        print(f"😊[Rank {rank}] Got {len(results)} results")
-                    else:
-                        print(f"❌[Rank {rank}] No tasks completed in 60s")
-                        continue
-                        
-                except Exception as e:
-                    print(f"❌[Rank {rank}] Ray wait error for tag {tag}: {e}")
-                    continue
-
+                results = ray.get(futures)
+                print(f"👌[Rank {rank}] ray.get (tag={tag}) -> results len={len(results)}")
 
                 found_any = False
                 for res in results:
