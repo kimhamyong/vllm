@@ -224,6 +224,9 @@ class CustomLoader(BaseModelLoader):
                 
                 # 로드가 끝난 뒤 임시 디렉터리 삭제
                 # shutil.rmtree(tmp_dir, ignore_errors=True)
+        
+        # 중복된 파일 경로 제거
+        filepaths = list(set(filepaths))
 
         if not filepaths:
             # TODO: support un-sharded checkpoints too
