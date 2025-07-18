@@ -135,6 +135,7 @@ class CustomLoader(BaseModelLoader):
 
         filepaths = []
         missing_tags = []
+
         for tag in desired_tags:
             pattern = os.path.join(
                 local_model_path,
@@ -149,21 +150,22 @@ class CustomLoader(BaseModelLoader):
                 found = glob.glob(pattern)
                 filepaths += found
                 print(f"🅰️[Rank {rank}] Tag {tag} found files: {filepaths}")
-                
-        # 로컬에 없는 shard(tag) 추가 → Ray로 다른 노드에서 가져오도록
-        
-        for tag in desired_tags:
-            pattern = os.path.join(
-                local_model_path,
-                self.pattern.format(rank=tag, part="*"),
-            )
-            found = glob.glob(pattern)          # 이미 한 번 쓴 코드 재사용
-            print(f"🔵[Rank {rank}] Tag {tag} filepaths: {found}")
-            filepaths += found                  # 있으면 filepaths 에 추가
-            print(f"🔽[Rank {rank}] Tag {tag} found files: {filepaths}")
-            if not found:                       # 없으면 missing
+                if not found:                       # 없으면 missing
                 missing_tags.append(tag)
                 print(f"*️⃣[Rank {rank}] missing_tags {tag}")
+        
+        # for tag in desired_tags:
+        #     pattern = os.path.join(
+        #         local_model_path,
+        #         self.pattern.format(rank=tag, part="*"),
+        #     )
+        #     found = glob.glob(pattern)          # 이미 한 번 쓴 코드 재사용
+        #     print(f"🔵[Rank {rank}] Tag {tag} filepaths: {found}")
+        #     filepaths += found                  # 있으면 filepaths 에 추가
+        #     print(f"🔽[Rank {rank}] Tag {tag} found files: {filepaths}")
+        #     if not found:                       # 없으면 missing
+        #         missing_tags.append(tag)
+        #         print(f"*️⃣[Rank {rank}] missing_tags {tag}")
 
 
 
@@ -320,7 +322,6 @@ class CustomLoader(BaseModelLoader):
             yield from runai_safetensors_weights_iterator(paths, True)
         else:
             from safetensors.torch import safe_open
-            logger.info(f"Paths to process: {paths}")  # 파일 경로 리스트 출력
 
             for path in paths:
                 logger.info(f"☑️[Rank {rank}] Trying to open file: {path}")
