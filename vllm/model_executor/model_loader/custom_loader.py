@@ -224,6 +224,7 @@ class CustomLoader(BaseModelLoader):
                         f.write(raw)
                     filepaths.append(tmp_path)
                     print(f"✅[Rank {rank}] Saved: {name}")
+                    print(f"🔽[Rank {rank}] Tag {tag} found files: {filepaths}")
                 
                 # 로드가 끝난 뒤 임시 디렉터리 삭제
                 # shutil.rmtree(tmp_dir, ignore_errors=True)
