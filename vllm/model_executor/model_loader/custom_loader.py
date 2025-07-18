@@ -326,10 +326,10 @@ class CustomLoader(BaseModelLoader):
 
             for path in paths:
                 logger.info(f"☑️[Rank {rank}] Trying to open file: {path}")
-                    with safe_open(path, framework="pt") as f:
-                        for key in f.keys():  # noqa: SIM118
-                            tensor = f.get_tensor(key)
-                            yield key, tensor
+                with safe_open(path, framework="pt") as f:
+                    for key in f.keys():  # noqa: SIM118
+                        tensor = f.get_tensor(key)
+                        yield key, tensor
 
 #-----------------------------------------------------------------------------------
 # 기존 코드:
