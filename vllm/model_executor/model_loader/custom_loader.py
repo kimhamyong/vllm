@@ -148,7 +148,7 @@ class CustomLoader(BaseModelLoader):
                 filepaths += glob.glob(pattern)
                 print(f"🅰️[Rank {rank}] Tag {tag} found files: {filepaths}")
 
-        # 로컬에 없는 shard(tag) → Ray로 다른 노드에서 가져오기
+        # 로컬에 없는 shard(tag) 찾기 → Ray로 다른 노드에서 가져오도록
         missing_tags = []
         for tag in desired_tags:
             pattern = os.path.join(
@@ -156,9 +156,9 @@ class CustomLoader(BaseModelLoader):
                 self.pattern.format(rank=tag, part="*"),
             )
             found = glob.glob(pattern)          # 이미 한 번 쓴 코드 재사용
-            print(f"🔵[Rank {rank}] Tag {tag} filepaths: {found}")
-            filepaths += found                  # 있으면 filepaths 에 추가
-            print(f"🔽[Rank {rank}] Tag {tag} found files: {filepaths}")
+            # print(f"🔵[Rank {rank}] Tag {tag} filepaths: {found}")
+            # filepaths += found                  # 있으면 filepaths 에 추가
+            # print(f"🔽[Rank {rank}] Tag {tag} found files: {filepaths}")
             if not found:                       # 없으면 ‘진짜로’ missing
                 missing_tags.append(tag)
 
@@ -224,7 +224,7 @@ class CustomLoader(BaseModelLoader):
                         f.write(raw)
                     filepaths.append(tmp_path)
                     print(f"✅[Rank {rank}] Saved: {name}")
-                    print(f"🔽[Rank {rank}] Tag {tag} found files: {filepaths}")
+                    print(f"🔽[Rank {rank}] files: {filepaths}")
                 
                 # 로드가 끝난 뒤 임시 디렉터리 삭제
                 # shutil.rmtree(tmp_dir, ignore_errors=True)
