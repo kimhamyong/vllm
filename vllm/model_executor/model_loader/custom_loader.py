@@ -151,8 +151,8 @@ class CustomLoader(BaseModelLoader):
                 filepaths += found
                 print(f"🅰️[Rank {rank}] Tag {tag} found files: {filepaths}")
                 if not found:                       # 없으면 missing
-                missing_tags.append(tag)
-                print(f"*️⃣[Rank {rank}] missing_tags {tag}")
+                    missing_tags.append(tag)
+                    print(f"*️⃣[Rank {rank}] missing_tags {tag}")
         
         # for tag in desired_tags:
         #     pattern = os.path.join(
