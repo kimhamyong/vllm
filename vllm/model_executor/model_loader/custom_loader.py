@@ -21,6 +21,7 @@ from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 import shutil
 
 logger = init_logger(__name__)
+ENABLE_LOAD_LOG = True
 
 class CustomLoader(BaseModelLoader):
     """
@@ -97,69 +98,16 @@ class CustomLoader(BaseModelLoader):
 
 
 #-----------------------------------------------------------------------------------
-    def load_weights(self, model: nn.Module,
-                     model_config: ModelConfig) -> None:
-        from vllm.distributed import get_tensor_model_parallel_rank
-        from vllm.distributed import get_tensor_model_parallel_world_size
-        import torch
-        import ray, tempfile, os, glob, shutil
-        from safetensors.torch import safe_open
+def _log_rank_stats(rank: int, loaded: int, total: int) -> None:
+    if not ENABLE_LOAD_LOG:
+        return
+    pct = loaded / total * 100 if total else 0.0
+    logger.info(
+        f"✔️[Rank {rank}] Loaded {loaded:,} / {total:,} params ({pct:.1f}%)"
+    )
 
-        model_weights = model_config.model
-
-        print("[👌] CustomLoader loading")
-
-        if hasattr(model_config, "model_weights"):
-            model_weights = model_config.model_weights
-        local_model_path = model_weights
-
-        # 현재 TP 환경에서의 rank를 가져옴
-        rank = get_tensor_model_parallel_rank()
-
-        # 현재 TP rank / world 크기
-        world_size = get_tensor_model_parallel_world_size()
-        half = world_size // 2 # ────────────일단 단순히 더 쪼갠 크기만큼 나눔────────────
-
-        # ── rank별로 가져올 shard 태그 결정 ──────────────────────────
-        if rank < half:                                   # rank 0~(half-1)
-            desired_tags = (
-                f"{rank}0",                               # 자기 0번
-                f"{rank}1",                               # 자기 1번
-                f"{rank + half}0",                        # 뒷노드의 0번 (
-            )
-        else:                                             # rank ≥ half
-            desired_tags = (
-                f"{rank}1",                               # 자기 1번만
-            )
-
-        print(f"🅾️[Rank {rank}] Desired tags: {desired_tags}")
-
-        filepaths = []
-        missing_tags = []
-
-        for tag in desired_tags:
-            pattern = os.path.join(
-                local_model_path, 
-                self.pattern.format(rank=tag, part="*")
-            )
-            
-            if is_s3(local_model_path):
-                file_pattern = f"*{self.pattern.format(rank=tag, part='*')}"
-                found = s3_glob(path=local_model_path, allow_pattern=[file_pattern])
-                print(f"🔴[Rank {rank}] S3 Tag {tag} found files: {found}")
-            else:
-                found = glob.glob(pattern)
-                print(f"🔵[Rank {rank}] Local Tag {tag} found files: {found}")
-            
-            if found:
-                filepaths += found
-                print(f"🅰️[Rank {rank}] Tag {tag} total files: {len(filepaths)}")
-            else:
-                missing_tags.append(tag)
-                print(f"*️⃣[Rank {rank}] missing_tags {tag}")
-
-        if missing_tags:
-            @ray.remote(num_cpus=0)
+#-----------------------------------------------------------------------------------
+@ray.remote(num_cpus=0)
             def _pull_files(dir_root: str, tag: str, pattern: str):
                 import glob, os, socket
 
@@ -172,71 +120,91 @@ class CustomLoader(BaseModelLoader):
                 else:
                     print(f"❌[Ray {ip}] no file for {patt}")
                 return {"ip": ip, "files": files}
-     
+
+#-----------------------------------------------------------------------------------
+    def load_weights(self, model: nn.Module,
+                     model_config: ModelConfig) -> None:
+        from vllm.distributed import get_tensor_model_parallel_rank
+        from vllm.distributed import get_tensor_model_parallel_world_size
+        import torch
+        import ray, tempfile, os, glob, shutil
+        from safetensors.torch import safe_open
+
+        print("[👌] CustomLoader loading")
+
+        model_weights = getattr(model_config, "model_weights", model_config.model)
+        local_model_path = model_weights
+
+        # 현재 TP rank 및 world size
+        rank       = get_tensor_model_parallel_rank()
+        world_size = get_tensor_model_parallel_world_size()
+        half       = world_size // 2
+
+        # ── rank별로 가져올 shard 태그 결정 ─────────────────────────────
+        if rank < half:               # rank 0~(half-1)
+            desired_tags = (
+                f"{rank}0",           # 자기 0번
+                f"{rank}1",           # 자기 1번
+                f"{rank+half}0",      # 뒷 노드의 0번
+            )
+        else:                         # rank ≥ half
+            desired_tags = (f"{rank}1",)  # 자기 1번만
+        print(f"🅾️[Rank {rank}] Desired tags: {desired_tags}")
+
+        # 로컬에서 shard 파일 탐색
+        filepaths, missing_tags = [], []
+        for tag in desired_tags:
+            pattern = os.path.join(local_model_path,
+                                self.pattern.format(rank=tag, part="*"))
+            found = glob.glob(pattern)
+            print(f"🔵[Rank {rank}] Local Tag {tag} found files: {found}")
+            if found:
+                filepaths += found
+                print(f"🅰️[Rank {rank}] Tag {tag} total files: {len(filepaths)}")
+            else:
+                missing_tags.append(tag)
+                print(f"🅱️[Rank {rank}] missing_tags {tag}")
+
+        # 부족한 태그가 있으면 원격 노드에서 수집
+        if missing_tags:
             pulled = []
             for tag in missing_tags:
                 print(f"😊[Rank {rank}] Searching tag {tag} on every node")
-
                 futures = [
                     _pull_files.options(
                         placement_group=None,
                         num_cpus=0,
                         scheduling_strategy=NodeAffinitySchedulingStrategy(
-                           node_id=n["NodeID"],
-                           soft=True,
-                        ),
+                            node_id=n["NodeID"], soft=True),
                     ).remote(local_model_path, tag, self.pattern)
                     for n in ray.nodes()
                 ]
-                print(f"😊[Rank {rank}] futures : {[f.hex() for f in futures]}")
+                # 모든 노드에서 결과 취합
+                for res in ray.get(futures):
+                    pulled.extend(res["files"])
 
-                results = ray.get(futures)
-                print(f"😊[Rank {rank}] ray.get (tag={tag})")
-
-                found_any = False
-                for res in results:
-                    ip    = res["ip"]
-                    files = res["files"]
-                    print(f"😊[Rank {rank}] result {ip}")
-                    if files:
-                        names = [n for n, _ in files]
-                        print(f"🌐[node {ip}] FOUND {names}")
-                        pulled.extend(files)
-                        found_any = True
-                    else:
-                        print(f"🌐[node {ip}] no file")
-                if not found_any:
-                    print(f"❌[Rank {rank}] Tag {tag}: not found on ANY node")
-     
+            # pulled 파일을 임시 디렉터리로 저장
             if pulled:
                 tmp_dir = tempfile.mkdtemp(prefix=f"remote_ckpt_rank{rank}_")
                 print(f"✅[Rank {rank}] Saving pulled files to tmp_dir={tmp_dir}")
-
                 for name, raw in pulled:
-                    tmp_path = os.path.join(tmp_dir, name)
-
-                    # 동일 파일 중복 방지
-                    if tmp_path in filepaths:
-                        print(f"❌[Rank {rank}] Duplicate {name} skipped")
+                    path = os.path.join(tmp_dir, name)
+                    if path in filepaths:          # 중복 방지
                         continue
-
-                    with open(tmp_path, "wb") as f:
+                    with open(path, "wb") as f:
                         f.write(raw)
-                    filepaths.append(tmp_path)
-                    print(f"✅[Rank {rank}] Saved: {name}")
-                    print(f"🔽[Rank {rank}] files: {filepaths}")
-                
-                # 로드가 끝난 뒤 임시 디렉터리 삭제
-                # shutil.rmtree(tmp_dir, ignore_errors=True)
+                    filepaths.append(path)
 
         def _collect_available_keys(paths):
             keys = set()
-            for fp in paths:                   
+            for fp in paths:
                 with safe_open(fp, framework="pt", device="cpu") as f:
                     keys |= set(f.keys())
             return keys
-
         available_keys = _collect_available_keys(filepaths)
+
+        if not filepaths:
+            raise ValueError(f"❌[Rank {rank}] No shard files found")
 
 
         if not filepaths:
@@ -251,15 +219,11 @@ class CustomLoader(BaseModelLoader):
             if k in available_keys          # part-0 쪽 key만 유지
         }
 
-        # 모델 총 파라미터 수 계산
-        total_params = sum(param.numel() for param in state_dict.values())
+        total_params  = sum(p.numel() for p in state_dict.values())  # 총 파라미터
+        loaded_params = 0                                            # 누적 로드 수
+        temp_parts    = {}                                           # half-shard buffer
 
-        # 각 rank에서 로드한 파라미터 수
-        loaded_params = 0 
-
-        temp_parts = {}   # 첫 번째 절반 보관용
-
-        # 각 파일을 순회하면서 분할된 tensor를 꺼냄
+        # shard 파일 순회하며 로드
         for key, tensor in self.iterate_over_files(filepaths, rank):
 
             # state_dict에 키가 없으면 스킵    
@@ -270,64 +234,31 @@ class CustomLoader(BaseModelLoader):
             loaded_params += tensor.numel()
 
             # 두 파일을 합쳐서 로드
-            if key in state_dict and tensor.shape != state_dict[key].shape:
-                # lm_head.weight는 두 파일에 동일하게 저장되어 있으므로 concat하지 않음
-                if key == "lm_head.weight":
-                    # 첫 번째 것만 사용하고 두 번째는 무시
-                    if key in temp_parts:
-                        continue  # 이미 처리했으므로 스킵
-                    temp_parts[key] = tensor  # 첫 번째만 보관
-                    tensor = temp_parts.pop(key)  # 바로 사용
-                else:
-                    if key not in temp_parts:
-                        temp_parts[key] = tensor
-                        continue
-                    else:
-                        tensor = torch.cat([temp_parts.pop(key), tensor], dim=-1)
+            if tensor.shape != state_dict[key].shape and key != "lm_head.weight":
+                buf = temp_parts.setdefault(key, tensor)
+                if buf is tensor:            # 첫 방문이면 continue
+                    continue
+                tensor = torch.cat([buf, tensor], dim=-1)
+                temp_parts.pop(key)
 
-            # 로드된 파라미터 누적
+            # 누적 카운트 (※ 한 번만)
             loaded_params += tensor.numel()
 
-            # If loading with LoRA enabled, additional padding may
-            # be added to certain parameters. We only load into a
-            # narrowed view of the parameter data.
-
-            # state_dict 딕셔너리에서 특정 파라미터(key)에 해당하는 텐서 값을 꺼냄
-            param_data = state_dict[key].data # 특정 파라미터 키
-
-            # 해당 파라미터의 전체 shape를 가져옴
-            param_shape = state_dict[key].shape
+            # tensor → param 복사 (좁은 뷰 대응)
+            dst = state_dict[key].data
             for dim, size in enumerate(tensor.shape):
-                if size < param_shape[dim]:
-                    param_data = param_data.narrow(dim, 0, size)
-            if tensor.shape != param_shape:
-                logger.warning(
-                    "loading tensor of shape %s into "
-                    "parameter '%s' of shape %s",
-                    tensor.shape,
-                    key,
-                    param_shape,
-                )
+                if size < dst.shape[dim]:
+                    dst = dst.narrow(dim, 0, size)
+            dst.copy_(tensor)
 
-            # tensor에 저장된 weight 값을 param_data로 in-place 복사    
-            param_data.copy_(tensor)
-
-            # state_dict 딕셔너리에서 현재 key-value 항목을 제거
-            # weight를 로딩한 key이므로, state_dict이 남아 있으면 weight가 누락된 것
             state_dict.pop(key)
 
-        # 로딩 완료 후 rank 별 파라미터 출력
-        if total_params == 0:
-            logger.warning(f"✔️[Rank {rank}] No parameters to load (total_params = 0)")
-        else:
-            logger.info(f"✔️[Rank {rank}] Loaded {loaded_params:,} / {total_params:,} params "
-                f"({loaded_params / total_params * 100:.1f}%)")
+        _log_rank_stats(rank, loaded_params, total_params)
 
-
-        if state_dict:   # 남은 key = part-1 쪽 절반
+        if state_dict:   # 남은 key = part-1 영역
             logger.warning(
                 "[Rank %d] %d keys skipped (partial-load TP): %s",
-                rank, len(state_dict), list(state_dict)[:5]   # 앞 5개만 표시
+                rank, len(state_dict), list(state_dict)[:5]
             )
 
 #-----------------------------------------------------------------------------------
