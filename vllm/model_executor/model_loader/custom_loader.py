@@ -97,19 +97,6 @@ class CustomLoader(BaseModelLoader):
     def download_model(self, model_config: ModelConfig) -> None:
         self._prepare_weights(model_config.model, model_config.revision)
 
-
-#-----------------------------------------------------------------------------------
-    @staticmethod
-    def _report_loading_stats(rank: int,
-                            loaded: int) -> None:
-        if not ENABLE_LOAD_LOG:
-            return
-
-        # 로그 출력
-        logger.info(
-            f"✔️[Rank {rank}] Loaded {loaded:,}"
-        )
-
 #-----------------------------------------------------------------------------------
     @staticmethod
     @ray.remote(num_cpus=0)
@@ -245,6 +232,7 @@ class CustomLoader(BaseModelLoader):
                 temp_parts.pop(key)
 
             # 로드된 파라미터 누적
+            logger.info(f"✔️[Rank {rank}] Loaded {tensor.numel():,}")
             loaded_params += tensor.numel()
 
             # tensor → param 복사 
@@ -256,8 +244,8 @@ class CustomLoader(BaseModelLoader):
 
             state_dict.pop(key)
 
-        # 로딩 통계 로그
-        CustomLoader._report_loading_stats(rank, loaded_params)
+        # 로딩 로그
+        logger.info(f"✔️✔️[Rank {rank}] Loaded {loaded_params:,}")
 
         if state_dict:   # 남은 key = part-1 영역
             logger.info(
