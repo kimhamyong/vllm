@@ -222,18 +222,19 @@ class CustomLoader(BaseModelLoader):
             # state_dict에 키가 없으면 스킵    
             if key not in state_dict:
                 continue
-
-            # 두 파일을 합쳐서 로드
-            if tensor.shape != state_dict[key].shape and key != "lm_head.weight":
-                buf = temp_parts.setdefault(key, tensor)
-                if buf is tensor:            # 첫 shard → 다음 shard 기다림
-                    continue
-                tensor = torch.cat([buf, tensor], dim=-1)
-                temp_parts.pop(key)
-
+            
             # 로드된 파라미터 누적
             logger.info(f"✔️[Rank {rank}] Loaded {tensor.numel():,}")
             loaded_params += tensor.numel()
+
+            # 두 파일을 합쳐서 로드 -> 나눠진 shard 파일을 합치는 경우
+            # `lm_head.weight`는 두 파일에 동일하게 저장되어 있으므로 첫 번째 텐서만 사용
+            if tensor.shape != state_dict[key].shape and key != "lm_head.weight": # 텐서의 shape이 `state_dict`에 이미 저장된 파라미터와 다르면
+                buf = temp_parts.setdefault(key, tensor)
+                if buf is tensor: # 첫 번째 shard가 이미 저장되어 `key`가 `temp_parts`에 이미 존재하면 다음 shard가 올 때까지 기다림
+                    continue
+                tensor = torch.cat([buf, tensor], dim=-1) # `torch.cat()`을 사용하여 두 텐서를 합침
+                temp_parts.pop(key) # 두 개의 shard가 합쳐지면, `temp_parts`에서 해당 `key` 삭제
 
             # tensor → param 복사 
             dst = state_dict[key].data
