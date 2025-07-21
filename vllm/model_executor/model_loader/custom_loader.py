@@ -272,6 +272,20 @@ class CustomLoader(BaseModelLoader):
             if key not in state_dict:
                 continue
 
+            # 로드된 파라미터 누적
+            loaded_params += tensor.numel()
+
+            # state_dict 딕셔너리에서 특정 파라미터(key)에 해당하는 텐서 값을 꺼냄
+            param_data = state_dict[key].data # 특정 파라미터 키
+
+            # 해당 파라미터의 전체 shape를 가져옴
+            param_shape = state_dict[key].shape
+            
+            # 텐서 크기가 파라미터보다 클 경우 narrow 적용
+            for dim, size in enumerate(tensor.shape):
+                if size < param_shape[dim]:
+                    param_data = param_data.narrow(dim, 0, size)
+
             # Shape 불일치 경고 및 처리
             if tensor.shape != param_shape:
                 logger.warning(
@@ -295,36 +309,10 @@ class CustomLoader(BaseModelLoader):
                 # tensor에 저장된 weight 값을 param_data로 in-place 복사    
                 param_data.copy_(tensor)
 
-            # 로드된 파라미터 누적
-            loaded_params += tensor.numel()
-
-            # If loading with LoRA enabled, additional padding may
-            # be added to certain parameters. We only load into a
-            # narrowed view of the parameter data.
-
-            # state_dict 딕셔너리에서 특정 파라미터(key)에 해당하는 텐서 값을 꺼냄
-            param_data = state_dict[key].data # 특정 파라미터 키
-
-            # 해당 파라미터의 전체 shape를 가져옴
-            param_shape = state_dict[key].shape
-            for dim, size in enumerate(tensor.shape):
-                if size < param_shape[dim]:
-                    param_data = param_data.narrow(dim, 0, size)
-            if tensor.shape != param_shape:
-                logger.warning(
-                    "loading tensor of shape %s into "
-                    "parameter '%s' of shape %s",
-                    tensor.shape,
-                    key,
-                    param_shape,
-                )
-
-            # tensor에 저장된 weight 값을 param_data로 in-place 복사    
-            param_data.copy_(tensor)
-
             # state_dict 딕셔너리에서 현재 key-value 항목을 제거
             # weight를 로딩한 key이므로, state_dict이 남아 있으면 weight가 누락된 것
             state_dict.pop(key)
+
 
         # 로딩 완료 후 rank 별 파라미터 출력
         if total_params == 0:
