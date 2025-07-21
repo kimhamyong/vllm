@@ -174,7 +174,7 @@ class CustomLoader(BaseModelLoader):
             for tag in missing_tags:
                 print(f"😊[Rank {rank}] Searching tag {tag} on every node")
                 futures = [
-                    _pull_files.options(
+                    CustomLoader._pull_files.options(
                         placement_group=None,
                         num_cpus=0,
                         scheduling_strategy=NodeAffinitySchedulingStrategy(
@@ -256,7 +256,7 @@ class CustomLoader(BaseModelLoader):
 
             state_dict.pop(key)
 
-        _log_rank_stats(rank, loaded_params, total_params)
+        CustomLoader._log_rank_stats(rank, loaded_params, total_params)
 
         if state_dict:   # 남은 key = part-1 영역
             logger.warning(
