@@ -101,19 +101,13 @@ class CustomLoader(BaseModelLoader):
 #-----------------------------------------------------------------------------------
     @staticmethod
     def _report_loading_stats(rank: int,
-                            loaded: int,
-                            global_total: int,
-                            world_size: int) -> None:
+                            loaded: int) -> None:
         if not ENABLE_LOAD_LOG:
             return
 
-        # 각 rank가 담당한 비율 계산
-        ratio = loaded / global_total
-        pct = ratio * 100 if ratio else 0.0
-
         # 로그 출력
         logger.info(
-            f"✔️[Rank {rank}] Loaded {loaded:,} / {global_total:,} params ({pct:.1f}%)"
+            f"✔️[Rank {rank}] Loaded {loaded:,}"
         )
 
 #-----------------------------------------------------------------------------------
@@ -231,7 +225,6 @@ class CustomLoader(BaseModelLoader):
         }
 
         # 모델 총 파라미터 수 계산
-        global_total = sum(p.numel() for p in model.state_dict().values())
         loaded_params = 0 
 
         temp_parts    = {} # half-shard buffer
@@ -242,9 +235,6 @@ class CustomLoader(BaseModelLoader):
             # state_dict에 키가 없으면 스킵    
             if key not in state_dict:
                 continue
-            
-            # 로드된 파라미터 누적
-            loaded_params += tensor.numel()
 
             # 두 파일을 합쳐서 로드
             if tensor.shape != state_dict[key].shape and key != "lm_head.weight":
@@ -253,6 +243,9 @@ class CustomLoader(BaseModelLoader):
                     continue
                 tensor = torch.cat([buf, tensor], dim=-1)
                 temp_parts.pop(key)
+
+            # 로드된 파라미터 누적
+            loaded_params += tensor.numel()
 
             # tensor → param 복사 
             dst = state_dict[key].data
@@ -264,7 +257,7 @@ class CustomLoader(BaseModelLoader):
             state_dict.pop(key)
 
         # 로딩 통계 로그
-        CustomLoader._report_loading_stats(rank, loaded_params, global_total, world_size)
+        CustomLoader._report_loading_stats(rank, loaded_params, world_size)
 
         if state_dict:   # 남은 key = part-1 영역
             logger.info(
