@@ -212,7 +212,8 @@ class CustomLoader(BaseModelLoader):
         }
 
         # 모델 총 파라미터 수 계산
-        loaded_params = 0 
+        loaded_params = 0
+        total_params = 0
 
         temp_parts    = {} # half-shard buffer
 
