@@ -198,13 +198,6 @@ class CustomLoader(BaseModelLoader):
         if not filepaths:
             raise ValueError(f"❌[Rank {rank}] No shard files found")
 
-
-        if not filepaths:
-            # TODO: support un-sharded checkpoints too
-            raise ValueError(
-                f"Could not find checkpoint files '{pattern}', only "
-                f"pre-sharded checkpoints are currently supported!")
-
         state_dict = {
             k: v
             for k, v in self._filter_subtensors(model.state_dict()).items()
@@ -244,7 +237,6 @@ class CustomLoader(BaseModelLoader):
 
             state_dict.pop(key)
 
-        # 로딩 로그
         logger.info(f"✴️[Rank {rank}] Total Loaded Parameters Across All Files: {total_params:,}")
 
         if state_dict:   # 남은 key = part-1 영역

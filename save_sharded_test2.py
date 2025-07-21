@@ -1,6 +1,26 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+"""
+Example usage:
+
+python save_sharded_state.py \
+    --model /path/to/load \
+    --quantization deepspeedfp \
+    --tensor-parallel-size 8 \
+    --output /path/to/save
+
+Then, the model can be loaded with
+
+llm = LLM(
+    model="/path/to/save",
+    load_format="sharded_state",
+    quantization="deepspeedfp",
+    tensor_parallel_size=8,
+)
+"""
+
+
 import dataclasses
 import os
 import shutil
