@@ -263,10 +263,13 @@ class CustomLoader(BaseModelLoader):
 
             for path in paths:
                 logger.info(f"☑️[Rank {rank}] Trying to open file: {path}")
+
                 with safe_open(path, framework="pt") as f:
+                    total_file_params = sum(tensor.numel() for tensor in f.values())
+                    logger.info(f"✔️[Rank {rank}] Loaded {total_file_params:,} parameters from file {path}")
+
                     for key in f.keys():  # noqa: SIM118
                         tensor = f.get_tensor(key)
-                        logger.info(f"✔️[Rank {rank}] Loaded {tensor.numel():,} parameters from file {key}")
                         yield key, tensor
 
 #-----------------------------------------------------------------------------------
