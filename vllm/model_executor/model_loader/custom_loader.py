@@ -245,7 +245,7 @@ class CustomLoader(BaseModelLoader):
             state_dict.pop(key)
 
         # 로딩 로그
-        logger.info(f"✔️✔️[Rank {rank}] Total Loaded Parameters Across All Files: {total_params:,}")
+        logger.info(f"✴️[Rank {rank}] Total Loaded Parameters Across All Files: {total_params:,}")
 
         if state_dict:   # 남은 key = part-1 영역
             logger.info(
