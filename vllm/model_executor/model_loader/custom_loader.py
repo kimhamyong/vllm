@@ -111,7 +111,8 @@ class CustomLoader(BaseModelLoader):
         rank_total = global_total // world_size
 
         # 각 rank가 담당한 비율 계산
-        ratio = loaded / rank_total  
+        ratio = loaded / global_total
+        pct = ratio * 100 if ratio else 0.0
 
         # rank %비율
         pct = ratio * 100 if ratio else 0.0
@@ -119,7 +120,7 @@ class CustomLoader(BaseModelLoader):
 
         # 로그 출력
         logger.info(
-            f"✔️[Rank {rank}] Loaded {loaded:,} / {rank_total:,} params ({pct:.1f}%)"
+            f"✔️[Rank {rank}] Loaded {loaded:,} / {global_total:,} params ({pct:.1f}%)"
         )
 
 #-----------------------------------------------------------------------------------
