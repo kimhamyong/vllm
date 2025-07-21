@@ -257,7 +257,7 @@ class CustomLoader(BaseModelLoader):
             state_dict.pop(key)
 
         # 로딩 통계 로그
-        CustomLoader._report_loading_stats(rank, loaded_params, world_size)
+        CustomLoader._report_loading_stats(rank, loaded_params)
 
         if state_dict:   # 남은 key = part-1 영역
             logger.info(
