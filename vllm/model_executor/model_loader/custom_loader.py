@@ -128,7 +128,7 @@ class CustomLoader(BaseModelLoader):
             )
         else:                                             # rank ≥ half
             desired_tags = (
-                f"{rank}0", f"{rank}1",                               # 자기 1번만
+                f"{rank}0",                               # 자기 1번만
             )
 
         print(f"🅾️[Rank {rank}] Desired tags: {desired_tags}")
