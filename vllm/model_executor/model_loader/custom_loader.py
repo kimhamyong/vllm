@@ -107,16 +107,9 @@ class CustomLoader(BaseModelLoader):
         if not ENABLE_LOAD_LOG:
             return
 
-        # 각 rank가 담당하는 파라미터 수
-        rank_total = global_total // world_size
-
         # 각 rank가 담당한 비율 계산
         ratio = loaded / global_total
         pct = ratio * 100 if ratio else 0.0
-
-        # rank %비율
-        pct = ratio * 100 if ratio else 0.0
-        fraction = f"{rank_total // global_total:.0f}/{world_size}"
 
         # 로그 출력
         logger.info(
