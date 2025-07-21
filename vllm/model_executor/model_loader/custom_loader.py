@@ -258,9 +258,6 @@ class CustomLoader(BaseModelLoader):
                 tensor = torch.cat([buf, tensor], dim=-1)
                 temp_parts.pop(key)
 
-            # 누적 카운트
-            loaded_params += tensor.numel()
-
             # tensor → param 복사 
             dst = state_dict[key].data
             for dim, size in enumerate(tensor.shape):
@@ -273,8 +270,8 @@ class CustomLoader(BaseModelLoader):
         CustomLoader._report_loading_stats(rank, loaded_params, model)
 
         if state_dict:   # 남은 key = part-1 영역
-            logger.warning(
-                "[Rank %d] %d keys skipped (partial-load TP): %s",
+            logger.info(
+                "🔴[Rank %d] %d keys skipped (partial-load TP): %s",
                 rank, len(state_dict), list(state_dict)[:5]
             )
 
