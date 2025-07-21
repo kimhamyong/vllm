@@ -241,11 +241,12 @@ class CustomLoader(BaseModelLoader):
 
             state_dict.pop(key)
 
-        # 로드한 state_dict의 파라미터 수만 출력
-        loaded_params = sum(tensor.numel() for tensor in state_dict.values())
+        # 모델 파라미터 수 추적
+        total_params = sum(p.numel() for p in model.parameters())
 
         # 로딩 로그
-        logger.info(f"✔️[Rank {rank}] Loaded {loaded_params:,} parameters in state_dict")
+        logger.info(f"✔️✔️[Rank {rank}] Loaded {total_params:,} parameters in the model")
+
 
         if state_dict:   # 남은 key = part-1 영역
             logger.info(
