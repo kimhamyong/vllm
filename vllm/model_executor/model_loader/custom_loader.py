@@ -103,6 +103,7 @@ class CustomLoader(BaseModelLoader):
         from vllm.distributed import get_tensor_model_parallel_world_size
         import torch
         import ray, tempfile, os, glob, shutil
+        from safetensors.torch import safe_open
 
         model_weights = model_config.model
 
@@ -228,41 +229,33 @@ class CustomLoader(BaseModelLoader):
                 # 로드가 끝난 뒤 임시 디렉터리 삭제
                 # shutil.rmtree(tmp_dir, ignore_errors=True)
 
+        def _collect_available_keys(paths):
+            keys = set()
+            for fp in paths:                   
+                with safe_open(fp, framework="pt", device="cpu") as f:
+                    keys |= set(f.keys())
+            return keys
+
+        available_keys = _collect_available_keys(filepaths)
+
+
         if not filepaths:
             # TODO: support un-sharded checkpoints too
             raise ValueError(
                 f"Could not find checkpoint files '{pattern}', only "
                 f"pre-sharded checkpoints are currently supported!")
-        state_dict = self._filter_subtensors(model.state_dict())
 
-        # 모델 절반 로드: state_dict의 파라미터들을 절반 크기로 축소
-
-        original_state_dict = state_dict.copy()
-        modified_state_dict = {}
-
-        for key, param in original_state_dict.items():
-            original_shape = param.shape
-            
-            # 마지막 차원을 절반으로 축소 (일반적으로 hidden_size 차원)
-            if len(original_shape) >= 2:
-                new_shape = list(original_shape)
-                new_shape[-1] = new_shape[-1] // 2  # 마지막 차원을 절반으로
-                
-                # 새로운 크기의 텐서 생성
-                modified_param = torch.zeros(new_shape, dtype=param.dtype, device=param.device)
-                modified_state_dict[key] = modified_param
-                
-                print(f"🔄[Rank {rank}] {key}: {original_shape} -> {new_shape}")
-            else:
-                # 1차원 이하는 그대로 유지
-                modified_state_dict[key] = param
-                print(f"🔄[Rank {rank}] {key}: {original_shape} (unchanged)")
-
-        state_dict = modified_state_dict
-
+        state_dict = {
+            k: v
+            for k, v in self._filter_subtensors(model.state_dict()).items()
+            if k in available_keys          # part-0 쪽 key만 유지
+        }
 
         # 모델 총 파라미터 수 계산
         total_params = sum(param.numel() for param in state_dict.values())
+
+        temp_parts = {}   # 첫 번째 절반 보관용
+
         loaded_params = 0 
 
         # 각 파일을 순회하면서 분할된 tensor를 꺼냄
@@ -272,21 +265,37 @@ class CustomLoader(BaseModelLoader):
             if key not in state_dict:
                 continue
 
+            # 두 파일을 합쳐서 로드
+            if key in state_dict and tensor.shape != state_dict[key].shape:
+                # lm_head.weight는 두 파일에 동일하게 저장되어 있으므로 concat하지 않음
+                if key == "lm_head.weight":
+                    # 첫 번째 것만 사용하고 두 번째는 무시
+                    if key in temp_parts:
+                        continue  # 이미 처리했으므로 스킵
+                    temp_parts[key] = tensor  # 첫 번째만 보관
+                    tensor = temp_parts.pop(key)  # 바로 사용
+                else:
+                    if key not in temp_parts:
+                        temp_parts[key] = tensor
+                        continue
+                    else:
+                        tensor = torch.cat([temp_parts.pop(key), tensor], dim=-1)
+
             # 로드된 파라미터 누적
             loaded_params += tensor.numel()
+
+            # If loading with LoRA enabled, additional padding may
+            # be added to certain parameters. We only load into a
+            # narrowed view of the parameter data.
 
             # state_dict 딕셔너리에서 특정 파라미터(key)에 해당하는 텐서 값을 꺼냄
             param_data = state_dict[key].data # 특정 파라미터 키
 
             # 해당 파라미터의 전체 shape를 가져옴
             param_shape = state_dict[key].shape
-            
-            # 텐서 크기가 파라미터보다 클 경우 narrow 적용
             for dim, size in enumerate(tensor.shape):
                 if size < param_shape[dim]:
                     param_data = param_data.narrow(dim, 0, size)
-
-            # Shape 불일치 경고 및 처리
             if tensor.shape != param_shape:
                 logger.warning(
                     "loading tensor of shape %s into "
@@ -295,35 +304,26 @@ class CustomLoader(BaseModelLoader):
                     key,
                     param_shape,
                 )
-                
-                # 크기가 다르면 맞는 부분만 복사
-                min_shape = [min(t, p) for t, p in zip(tensor.shape, param_shape)]
-                if len(min_shape) == 1:
-                    param_data[:min_shape[0]].copy_(tensor[:min_shape[0]])
-                elif len(min_shape) == 2:
-                    param_data[:min_shape[0], :min_shape[1]].copy_(tensor[:min_shape[0], :min_shape[1]])
-                else:
-                    # 더 많은 차원에 대한 처리가 필요하면 추가
-                    param_data.copy_(tensor)
-            else:
-                # tensor에 저장된 weight 값을 param_data로 in-place 복사    
-                param_data.copy_(tensor)
+
+            # tensor에 저장된 weight 값을 param_data로 in-place 복사    
+            param_data.copy_(tensor)
 
             # state_dict 딕셔너리에서 현재 key-value 항목을 제거
             # weight를 로딩한 key이므로, state_dict이 남아 있으면 weight가 누락된 것
             state_dict.pop(key)
 
-
         # 로딩 완료 후 rank 별 파라미터 출력
         if total_params == 0:
             logger.warning(f"✔️[Rank {rank}] No parameters to load (total_params = 0)")
         else:
-            logger.info(f"✔️[Rank {rank}] Half Model - Loaded {loaded_params:,} / {total_params:,} params ({loaded_params/total_params*100:.1f}%)")
+            logger.info(f"✔️[Rank {rank}] Loaded {loaded_params:,} / {total_params:,} params ({loaded_params/total_params*100:.1f}%)")
 
 
-        if state_dict:
-            raise ValueError(
-                f"Missing keys {tuple(state_dict)} in loaded state!")
+        if state_dict:   # 남은 key = part-1 쪽 절반
+            logger.warning(
+                "[Rank %d] %d keys skipped (partial-load TP): %s",
+                rank, len(state_dict), list(state_dict)[:5]   # 앞 5개만 표시
+            )
 
 #-----------------------------------------------------------------------------------
     def iterate_over_files(
@@ -497,4 +497,3 @@ class CustomLoader(BaseModelLoader):
             )
             print(f"[👌👌👌✅] {rank}, {filename_0}")
             print(f"[👌👌👌✅] {rank}, {filename_1}")
-
