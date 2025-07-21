@@ -100,12 +100,26 @@ class CustomLoader(BaseModelLoader):
 
 #-----------------------------------------------------------------------------------
     @staticmethod
-    def _log_rank_stats(rank: int, loaded: int, total: int) -> None:
+    def _report_loading_stats(rank: int,
+                          loaded: int,
+                          model: nn.Module) -> None:
+
         if not ENABLE_LOAD_LOG:
             return
-        pct = loaded / total * 100 if total else 0.0
+
+        import torch, torch.distributed as dist
+        # ── 전체 파라미터 수: rank 0 → broadcast ────────────────────────
+        if rank == 0:
+            global_total = sum(p.numel() for p in model.state_dict().values())
+        else:
+            global_total = 0
+        t = torch.tensor([global_total], dtype=torch.long, device="cuda")
+        dist.broadcast(t, src=0)
+        global_total = t.item()
+
+        pct = loaded / global_total * 100 if global_total else 0.0
         logger.info(
-            f"✔️[Rank {rank}] Loaded {loaded:,} / {total:,} params ({pct:.1f}%)"
+            f"✔️[Rank {rank}] Loaded {loaded:,} / {global_total:,} params ({pct:.1f}%)"
         )
 
 #-----------------------------------------------------------------------------------
@@ -239,15 +253,15 @@ class CustomLoader(BaseModelLoader):
             # 두 파일을 합쳐서 로드
             if tensor.shape != state_dict[key].shape and key != "lm_head.weight":
                 buf = temp_parts.setdefault(key, tensor)
-                if buf is tensor:            # 첫 방문이면 continue
+                if buf is tensor:            # 첫 shard → 다음 shard 기다림
                     continue
                 tensor = torch.cat([buf, tensor], dim=-1)
                 temp_parts.pop(key)
 
-            # 누적 카운트 (※ 한 번만)
+            # 누적 카운트
             loaded_params += tensor.numel()
 
-            # tensor → param 복사 (좁은 뷰 대응)
+            # tensor → param 복사 
             dst = state_dict[key].data
             for dim, size in enumerate(tensor.shape):
                 if size < dst.shape[dim]:
@@ -256,7 +270,7 @@ class CustomLoader(BaseModelLoader):
 
             state_dict.pop(key)
 
-        CustomLoader._log_rank_stats(rank, loaded_params, total_params)
+        CustomLoader._report_loading_stats(rank, loaded_params, model)
 
         if state_dict:   # 남은 key = part-1 영역
             logger.warning(
