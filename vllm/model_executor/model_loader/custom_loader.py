@@ -254,9 +254,10 @@ class CustomLoader(BaseModelLoader):
         # 모델 총 파라미터 수 계산
         total_params = sum(param.numel() for param in state_dict.values())
 
-        temp_parts = {}   # 첫 번째 절반 보관용
-
+        # 각 rank에서 로드한 파라미터 수
         loaded_params = 0 
+
+        temp_parts = {}   # 첫 번째 절반 보관용
 
         # 각 파일을 순회하면서 분할된 tensor를 꺼냄
         for key, tensor in self.iterate_over_files(filepaths, rank):
@@ -264,6 +265,9 @@ class CustomLoader(BaseModelLoader):
             # state_dict에 키가 없으면 스킵    
             if key not in state_dict:
                 continue
+            
+            # 로드된 파라미터 누적
+            loaded_params += tensor.numel()
 
             # 두 파일을 합쳐서 로드
             if key in state_dict and tensor.shape != state_dict[key].shape:
@@ -316,7 +320,8 @@ class CustomLoader(BaseModelLoader):
         if total_params == 0:
             logger.warning(f"✔️[Rank {rank}] No parameters to load (total_params = 0)")
         else:
-            logger.info(f"✔️[Rank {rank}] Loaded {loaded_params:,} / {total_params:,} params ({loaded_params/total_params*100:.1f}%)")
+            logger.info(f"✔️[Rank {rank}] Loaded {loaded_params:,} / {total_params:,} params "
+                f"({loaded_params / total_params * 100:.1f}%)")
 
 
         if state_dict:   # 남은 key = part-1 쪽 절반
