@@ -124,11 +124,11 @@ class CustomLoader(BaseModelLoader):
             desired_tags = (
                 f"{rank}0",                               # 자기 0번
                 f"{rank}1",                               # 자기 1번
-                f"{rank + half}0",                        # 뒷노드의 0번 (
+                f"{rank+half}0", f"{rank+half}1",                        # 뒷노드의 0번 (
             )
         else:                                             # rank ≥ half
             desired_tags = (
-                f"{rank}1",                               # 자기 1번만
+                f"{rank+half}0", f"{rank+half}1",                               # 자기 1번만
             )
 
         print(f"🅾️[Rank {rank}] Desired tags: {desired_tags}")
