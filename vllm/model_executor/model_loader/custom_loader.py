@@ -19,6 +19,7 @@ from vllm.transformers_utils.s3_utils import glob as s3_glob
 from vllm.transformers_utils.utils import is_s3
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 import shutil
+import ray
 
 logger = init_logger(__name__)
 ENABLE_LOAD_LOG = True
