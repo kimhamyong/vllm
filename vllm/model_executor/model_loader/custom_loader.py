@@ -213,7 +213,6 @@ class CustomLoader(BaseModelLoader):
 
         # 모델 총 파라미터 수 계산
         loaded_params = 0
-        total_params = 0
 
         temp_parts    = {} # half-shard buffer
 
@@ -246,9 +245,7 @@ class CustomLoader(BaseModelLoader):
         loaded_params = sum(p.numel() for p in model.parameters())
 
         # 로딩 로그
-        logger.info(f"✔️[Rank {rank}] Loaded {loaded_params:,} parameters in the model")
-        total_params+= loaded_params
-        logger.info(f"✔️✔️[Rank {rank}] Total parameters loaded: {total_params:,}")
+        logger.info(f"✔️✔️[Rank {rank}] Loaded {loaded_params:,} parameters in the model")
 
         if state_dict:   # 남은 key = part-1 영역
             logger.info(
@@ -269,6 +266,7 @@ class CustomLoader(BaseModelLoader):
                 with safe_open(path, framework="pt") as f:
                     for key in f.keys():  # noqa: SIM118
                         tensor = f.get_tensor(key)
+                        logger.info(f"✔️[Rank {rank}] Loaded {tensor.numel():,} parameters from file {key}")
                         yield key, tensor
 
 #-----------------------------------------------------------------------------------
