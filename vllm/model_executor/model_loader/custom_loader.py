@@ -219,12 +219,12 @@ class CustomLoader(BaseModelLoader):
         # shard 파일 순회하며 로드
         for key, tensor in self.iterate_over_files(filepaths, rank):
 
+            loaded_params = tensor.numel()
+            total_params += loaded_params
+
             # state_dict에 키가 없으면 스킵    
             if key not in state_dict:
                 continue
-
-            loaded_params = tensor.numel()
-            total_params += loaded_params
 
             # 두 파일을 합쳐서 로드 -> 나눠진 shard 파일을 합치는 경우
             # `lm_head.weight`는 두 파일에 동일하게 저장되어 있으므로 첫 번째 텐서만 사용
