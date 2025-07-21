@@ -212,7 +212,7 @@ class CustomLoader(BaseModelLoader):
         }
 
         # 모델 총 파라미터 수 계산
-        loaded_params = 0
+        total_params = 0
 
         temp_parts    = {} # half-shard buffer
 
@@ -222,6 +222,9 @@ class CustomLoader(BaseModelLoader):
             # state_dict에 키가 없으면 스킵    
             if key not in state_dict:
                 continue
+
+            loaded_params = tensor.numel()
+            total_params += loaded_params
 
             # 두 파일을 합쳐서 로드 -> 나눠진 shard 파일을 합치는 경우
             # `lm_head.weight`는 두 파일에 동일하게 저장되어 있으므로 첫 번째 텐서만 사용
@@ -241,11 +244,8 @@ class CustomLoader(BaseModelLoader):
 
             state_dict.pop(key)
 
-        # 모델 파라미터 수 추적
-        loaded_params = sum(p.numel() for p in model.parameters())
-
         # 로딩 로그
-        logger.info(f"✔️✔️[Rank {rank}] Loaded {loaded_params:,} parameters in the model")
+        logger.info(f"✔️✔️[Rank {rank}] Total Loaded Parameters Across All Files: {total_params:,}")
 
         if state_dict:   # 남은 key = part-1 영역
             logger.info(
