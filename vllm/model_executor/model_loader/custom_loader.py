@@ -103,6 +103,7 @@ class CustomLoader(BaseModelLoader):
         from vllm.distributed import get_tensor_model_parallel_world_size
         import torch
         import ray, tempfile, os, glob, shutil
+        from safetensors.torch import safe_open
 
         model_weights = model_config.model
 
@@ -124,11 +125,11 @@ class CustomLoader(BaseModelLoader):
             desired_tags = (
                 f"{rank}0",                               # 자기 0번
                 f"{rank}1",                               # 자기 1번
-                f"{rank+half}0", f"{rank+half}1",                        # 뒷노드의 0번 (
+                f"{rank + half}0",                        # 뒷노드의 0번 (
             )
         else:                                             # rank ≥ half
             desired_tags = (
-                f"{rank}0",                               # 자기 1번만
+                f"{rank}1",                               # 자기 1번만
             )
 
         print(f"🅾️[Rank {rank}] Desired tags: {desired_tags}")
@@ -228,12 +229,27 @@ class CustomLoader(BaseModelLoader):
                 # 로드가 끝난 뒤 임시 디렉터리 삭제
                 # shutil.rmtree(tmp_dir, ignore_errors=True)
 
+        def _collect_available_keys(paths):
+            keys = set()
+            for fp in paths:                   
+                with safe_open(fp, framework="pt", device="cpu") as f:
+                    keys |= set(f.keys())
+            return keys
+
+        available_keys = _collect_available_keys(filepaths)
+
+
         if not filepaths:
             # TODO: support un-sharded checkpoints too
             raise ValueError(
                 f"Could not find checkpoint files '{pattern}', only "
                 f"pre-sharded checkpoints are currently supported!")
-        state_dict = self._filter_subtensors(model.state_dict())
+
+        state_dict = {
+            k: v
+            for k, v in self._filter_subtensors(model.state_dict()).items()
+            if k in available_keys          # part-0 쪽 key만 유지
+        }
 
         # 모델 총 파라미터 수 계산
         total_params = sum(param.numel() for param in state_dict.values())
@@ -303,9 +319,11 @@ class CustomLoader(BaseModelLoader):
             logger.info(f"✔️[Rank {rank}] Loaded {loaded_params:,} / {total_params:,} params ({loaded_params/total_params*100:.1f}%)")
 
 
-        if state_dict:
-            raise ValueError(
-                f"Missing keys {tuple(state_dict)} in loaded state!")
+        if state_dict:   # 남은 key = part-1 쪽 절반
+            logger.warning(
+                "[Rank %d] %d keys skipped (partial-load TP): %s",
+                rank, len(state_dict), list(state_dict)[:5]   # 앞 5개만 표시
+            )
 
 #-----------------------------------------------------------------------------------
     def iterate_over_files(
