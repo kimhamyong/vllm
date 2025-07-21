@@ -99,6 +99,7 @@ class CustomLoader(BaseModelLoader):
 
 
 #-----------------------------------------------------------------------------------
+    @staticmethod
     def _log_rank_stats(rank: int, loaded: int, total: int) -> None:
         if not ENABLE_LOAD_LOG:
             return
@@ -108,6 +109,7 @@ class CustomLoader(BaseModelLoader):
         )
 
 #-----------------------------------------------------------------------------------
+    @staticmethod
     @ray.remote(num_cpus=0)
     def _pull_files(dir_root: str, tag: str, pattern: str):
         import glob, os, socket
