@@ -98,28 +98,28 @@ class CustomLoader(BaseModelLoader):
 
 
 #-----------------------------------------------------------------------------------
-def _log_rank_stats(rank: int, loaded: int, total: int) -> None:
-    if not ENABLE_LOAD_LOG:
-        return
-    pct = loaded / total * 100 if total else 0.0
-    logger.info(
-        f"✔️[Rank {rank}] Loaded {loaded:,} / {total:,} params ({pct:.1f}%)"
-    )
+    def _log_rank_stats(rank: int, loaded: int, total: int) -> None:
+        if not ENABLE_LOAD_LOG:
+            return
+        pct = loaded / total * 100 if total else 0.0
+        logger.info(
+            f"✔️[Rank {rank}] Loaded {loaded:,} / {total:,} params ({pct:.1f}%)"
+        )
 
 #-----------------------------------------------------------------------------------
-@ray.remote(num_cpus=0)
-            def _pull_files(dir_root: str, tag: str, pattern: str):
-                import glob, os, socket
+    @ray.remote(num_cpus=0)
+    def _pull_files(dir_root: str, tag: str, pattern: str):
+        import glob, os, socket
 
-                ip   = socket.gethostbyname(socket.gethostname())   # 실행 노드 IP
-                patt = os.path.join(dir_root, pattern.format(rank=tag, part="*"))
-                files = [(os.path.basename(fp), open(fp, "rb").read())
-                        for fp in glob.glob(patt)]
-                if files:
-                    print(f"✅[Ray {ip}] {len(files)} file(s) matched {patt}")
-                else:
-                    print(f"❌[Ray {ip}] no file for {patt}")
-                return {"ip": ip, "files": files}
+        ip   = socket.gethostbyname(socket.gethostname())   # 실행 노드 IP
+        patt = os.path.join(dir_root, pattern.format(rank=tag, part="*"))
+        files = [(os.path.basename(fp), open(fp, "rb").read())
+                for fp in glob.glob(patt)]
+        if files:
+            print(f"✅[Ray {ip}] {len(files)} file(s) matched {patt}")
+        else:
+            print(f"❌[Ray {ip}] no file for {patt}")
+        return {"ip": ip, "files": files}
 
 #-----------------------------------------------------------------------------------
     def load_weights(self, model: nn.Module,
