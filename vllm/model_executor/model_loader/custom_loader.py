@@ -182,7 +182,7 @@ class CustomLoader(BaseModelLoader):
                         num_cpus=0,
                         scheduling_strategy=NodeAffinitySchedulingStrategy(
                            node_id=n["NodeID"],
-                           soft=False,
+                           soft=True,
                         ),
                     ).remote(local_model_path, tag, self.pattern)
                     for n in ray.nodes()
