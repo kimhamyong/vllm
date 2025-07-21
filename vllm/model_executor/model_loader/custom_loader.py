@@ -101,25 +101,25 @@ class CustomLoader(BaseModelLoader):
 #-----------------------------------------------------------------------------------
     @staticmethod
     def _report_loading_stats(rank: int,
-                          loaded: int,
-                          model: nn.Module) -> None:
-
+                            loaded: int,
+                            global_total: int,
+                            world_size: int) -> None:
         if not ENABLE_LOAD_LOG:
             return
 
-        import torch, torch.distributed as dist
-        # ── 전체 파라미터 수: rank 0 → broadcast ────────────────────────
-        if rank == 0:
-            global_total = sum(p.numel() for p in model.state_dict().values())
-        else:
-            global_total = 0
-        t = torch.tensor([global_total], dtype=torch.long, device="cuda")
-        dist.broadcast(t, src=0)
-        global_total = t.item()
+        # 각 rank가 담당하는 파라미터 수
+        rank_total = global_total // world_size
 
-        pct = loaded / global_total * 100 if global_total else 0.0
+        # 각 rank가 담당한 비율 계산
+        ratio = loaded / rank_total  
+
+        # rank %비율
+        pct = ratio * 100 if ratio else 0.0
+        fraction = f"{rank_total // global_total:.0f}/{world_size}"
+
+        # 로그 출력
         logger.info(
-            f"✔️[Rank {rank}] Loaded {loaded:,} / {global_total:,} params ({pct:.1f}%)"
+            f"✔️[Rank {rank}] Loaded {loaded:,} / {rank_total:,} params ({pct:.1f}%)"
         )
 
 #-----------------------------------------------------------------------------------
@@ -236,9 +236,11 @@ class CustomLoader(BaseModelLoader):
             if k in available_keys          # part-0 쪽 key만 유지
         }
 
-        total_params  = sum(p.numel() for p in state_dict.values())  # 총 파라미터
-        loaded_params = 0                                            # 누적 로드 수
-        temp_parts    = {}                                           # half-shard buffer
+        # 모델 총 파라미터 수 계산
+        global_total = sum(p.numel() for p in model.state_dict().values())
+        loaded_params = 0 
+
+        temp_parts    = {} # half-shard buffer
 
         # shard 파일 순회하며 로드
         for key, tensor in self.iterate_over_files(filepaths, rank):
@@ -267,7 +269,8 @@ class CustomLoader(BaseModelLoader):
 
             state_dict.pop(key)
 
-        CustomLoader._report_loading_stats(rank, loaded_params, model)
+        # 로딩 통계 로그
+        CustomLoader._report_loading_stats(rank, loaded_params, global_total, world_size)
 
         if state_dict:   # 남은 key = part-1 영역
             logger.info(
