@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import itertools
+import os
 from abc import abstractmethod
 from typing import Any, Literal, Optional, Union
 
@@ -31,6 +32,44 @@ from vllm.model_executor.utils import set_weight_attrs
 from vllm.platforms import current_platform
 
 logger = init_logger(__name__)
+
+
+def get_weight_distribution_ratios(tp_size: int) -> list[int]:
+    """환경 변수에서 가중치 분배 비율을 읽어옵니다.
+    
+    환경 변수 VLLM_WEIGHT_RATIOS 형식: "3:1" 또는 "1:2:2:1"
+    기본값: 균등 분배 (모든 rank에 동일한 비율)
+    
+    Args:
+        tp_size: tensor parallel world size
+        
+    Returns:
+        각 rank의 가중치 비율 리스트
+    """
+    env_ratios = os.environ.get('VLLM_WEIGHT_RATIOS', None)
+    
+    if env_ratios:
+        try:
+            ratios = [int(r) for r in env_ratios.split(':')]
+            if len(ratios) != tp_size:
+                logger.warning(
+                    f"VLLM_WEIGHT_RATIOS length ({len(ratios)}) doesn't match "
+                    f"tp_size ({tp_size}). Using uniform distribution.")
+                return [1] * tp_size
+            if any(r <= 0 for r in ratios):
+                logger.warning(
+                    "VLLM_WEIGHT_RATIOS contains non-positive values. "
+                    "Using uniform distribution.")
+                return [1] * tp_size
+            return ratios
+        except ValueError:
+            logger.warning(
+                f"Invalid VLLM_WEIGHT_RATIOS format: {env_ratios}. "
+                "Expected format: '3:1' or '1:2:2:1'. Using uniform distribution.")
+            return [1] * tp_size
+    
+    return [1] * tp_size
+
 
 WEIGHT_LOADER_V2_SUPPORTED = [
     "CompressedTensorsLinearMethod",
@@ -817,7 +856,7 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
                                         shard_offset=shard_offset,
                                         shard_size=shard_size)
 
-
+# Q/K/V 병합 처리 및 head 수 분할 로직
 class QKVParallelLinear(ColumnParallelLinear):
     """Linear layers for the attention's QKV transformation.
 
@@ -861,12 +900,16 @@ class QKVParallelLinear(ColumnParallelLinear):
     ):
         self.hidden_size = hidden_size
         self.head_size = head_size
+
+        # 전체 query head 수와 key/value head 수
         self.total_num_heads = total_num_heads
         if total_num_kv_heads is None:
             total_num_kv_heads = total_num_heads
         self.total_num_kv_heads = total_num_kv_heads
+
         # Divide the weight matrix along the last dimension.
         tp_size = get_tensor_model_parallel_world_size()
+        # 이 rank가 담당할 head 수 -> 전체 head 수를 TP world size만큼 나눈 값
         self.num_heads = divide(self.total_num_heads, tp_size)
         if tp_size >= self.total_num_kv_heads:
             self.num_kv_heads = 1
@@ -878,12 +921,17 @@ class QKVParallelLinear(ColumnParallelLinear):
         input_size = self.hidden_size
         output_size = (self.num_heads +
                        2 * self.num_kv_heads) * tp_size * self.head_size
+        
+        # weight를 Q, K, V 3개 projection 용도로 쪼갤 기준
+        # TP 구조에 따라 확장된 각 block의 크기 (head_count * head_size * tp_size)
         self.output_sizes = [
             self.num_heads * self.head_size * tp_size,  # q_proj
             self.num_kv_heads * self.head_size * tp_size,  # k_proj
             self.num_kv_heads * self.head_size * tp_size,  # v_proj 
         ]
 
+        # Q + K + V 전체 projection을 합친 총 출력 차원을 설정
+        # 하나의 큰 weight로 Q/K/V 연산을 동시에 수행할 수 있도록
         super().__init__(input_size=input_size,
                          output_size=output_size,
                          bias=bias,
@@ -894,6 +942,7 @@ class QKVParallelLinear(ColumnParallelLinear):
                          prefix=prefix,
                          return_bias=return_bias)
 
+    # Q, K, V의 시작 위치 (offset)
     def _get_shard_offset_mapping(self, loaded_shard_id: str):
         shard_offset_mapping = {
             "q": 0,
@@ -903,6 +952,7 @@ class QKVParallelLinear(ColumnParallelLinear):
         }
         return shard_offset_mapping.get(loaded_shard_id)
 
+    # Q, K, V 각각의 크기 (weight 길이)
     def _get_shard_size_mapping(self, loaded_shard_id: str):
         shard_size_mapping = {
             "q": self.num_heads * self.head_size,
@@ -911,6 +961,8 @@ class QKVParallelLinear(ColumnParallelLinear):
         }
         return shard_size_mapping.get(loaded_shard_id)
 
+    # Q/K/V projection weight가 이미 병합(fused)되어 저장된 경우 사용
+    # QKV 병합 weight를 체크포인트로부터 로딩
     def _load_fused_module_from_checkpoint(self, param: BasevLLMParameter,
                                            loaded_weight: torch.Tensor):
                                            # param: 로딩할 대상 파라미터, loaded_weight: 이미 fused된 하나의 weight 텐서(q+k+v)
@@ -950,6 +1002,7 @@ class QKVParallelLinear(ColumnParallelLinear):
             # 잘라낸 q,k,v weigh 조각을 실제 모델 파라미터에 반영
             self.weight_loader_v2(param, loaded_weight_shard, shard_id)
 
+    # _load_fused_module_from_checkpoint 용
     # load_qkv_weight() 메서드가 있다는 걸 전제함 -> TP shard 처리 함수
     def weight_loader_v2(self,
                          param: BasevLLMParameter,
@@ -997,10 +1050,10 @@ class QKVParallelLinear(ColumnParallelLinear):
         is_gguf_weight_type = getattr(param, "is_gguf_weight_type", False)
         if is_gguf_weight_type:
             idx_map = {"q": 0, "k": 1, "v": 2}
-            if loaded_shard_id is not None:
-                param.data[idx_map[loaded_shard_id]].copy_(loaded_weight)
-                param.shard_weight_type[loaded_shard_id] = loaded_weight.item()
-            else:
+            if loaded_shard_id is not None: # 예: loaded_shard_id="q": Q만 따로 저장된 weight일 때
+                param.data[idx_map[loaded_shard_id]].copy_(loaded_weight) # 해당 Q/K/V에 해당하는 위치에 weight 값을 복사
+                param.shard_weight_type[loaded_shard_id] = loaded_weight.item() # weight의 타입 저장
+            else: # loaded_shard_id=None이면 Q, K, V 전부 동일한 타입으로 설정, QKV가 [Q | K | V]로 합쳐져서 저장된 weight
                 param.shard_weight_type = {
                     k: loaded_weight.item()
                     for k in idx_map
@@ -1009,17 +1062,21 @@ class QKVParallelLinear(ColumnParallelLinear):
 
         # GGUF 모델일 때 직접 분할해서 로딩하는 구조
         if is_gguf_weight:
+            # 현재 TP 설정 가져오기
             tp_size = get_tensor_model_parallel_world_size()
             tp_rank = get_tensor_model_parallel_rank()
 
             output_dim = getattr(param, "output_dim", None)
+            
+            # TP rank 기준으로 slicing할 크기와 시작 위치 계산
             shard_size = loaded_weight.size(output_dim) // tp_size
             start_idx = tp_rank * shard_size
 
+            # Q/K/V 중 하나가 주어졌을 때
             if loaded_shard_id is not None:
                 loaded_weight = loaded_weight.narrow(output_dim, start_idx,
-                                                     shard_size)
-                param.shard_id.append(loaded_shard_id)
+                                                     shard_size) # 해당 shard만 잘라냄
+                param.shard_id.append(loaded_shard_id) 
                 param.shard_id_map[loaded_shard_id] = len(param.data_container)
                 param.data_container.append(loaded_weight)
                 return
@@ -1032,17 +1089,22 @@ class QKVParallelLinear(ColumnParallelLinear):
         # Special case for per-tensor scales in fused case.
         needs_scalar_to_array = getattr(param, "needs_scalar_to_array", False)
 
+        # Q/K/V가 하나로 병합된 weight
         if loaded_shard_id is None:
             # Loaded weight is already fused on disk (qkv).
             # (e.g., Phi-3's qkv_proj).
+            
+            # output_dim이 없으면 Q/K/V가 병합된 상태로 저장된 것 → 1D weight
             if output_dim is None:
                 if needs_scalar_to_array:
                     param_data, loaded_weight = adjust_scalar_to_fused_array(
                         param_data, loaded_weight, 0)
 
                 assert param_data.shape == loaded_weight.shape
-                param_data.copy_(loaded_weight)
+                param_data.copy_(loaded_weight) # shape 일치 확인 후 복사
                 return
+
+            # Q/K/V 각 영역의 (shard_id, offset, size) 정의
             shard_offsets = [
                 # (shard_id, shard_offset, shard_size)
                 ("q", 0, self.total_num_heads * self.head_size),
@@ -1055,6 +1117,8 @@ class QKVParallelLinear(ColumnParallelLinear):
                                             False)
 
             packed_dim = getattr(param, "packed_dim", None)
+
+            # Q/K/V 각각에 대해 반복
             for shard_id, shard_offset, shard_size in shard_offsets:
                 # Special case for Quantized Weights.
                 # If quantized, we need to adjust the offset and size to account
@@ -1089,25 +1153,26 @@ class QKVParallelLinear(ColumnParallelLinear):
                 self.weight_loader(param, loaded_weight_shard, shard_id)
             return
 
+        # Q/K/V가 각각 따로 저장된 경우
         tp_rank = get_tensor_model_parallel_rank()
         assert loaded_shard_id in ["q", "k", "v"]
 
         # If output dim is defined, use the default loading process.
         if output_dim is not None:
-            if loaded_shard_id == "q":
+            if loaded_shard_id == "q": # Q는 weight의 첫 부분에 있으므로 offset 0
                 shard_offset = 0
                 shard_size = self.num_heads * self.head_size
-            elif loaded_shard_id == "k":
+            elif loaded_shard_id == "k": # K는 Q 다음에 있으므로 offset은 Q 크기만큼 건너뜀
                 shard_offset = self.num_heads * self.head_size
                 shard_size = self.num_kv_heads * self.head_size
-            elif loaded_shard_id == "v":
+            elif loaded_shard_id == "v": # V는 Q+K 크기만큼 건너뜀
                 shard_offset = (self.num_heads +
                                 self.num_kv_heads) * self.head_size
                 shard_size = self.num_kv_heads * self.head_size
             # Special case for Quantized Weights.
             # If quantized, we need to adjust the offset and size to account
             # for the packing.
-            packed_dim = getattr(param, "packed_dim", None)
+            packed_dim = getattr(param, "packed_dim", None) # 양자화된 weight라면 offset/size를 pack 단위로 조정
             if packed_dim == output_dim:
                 shard_size = shard_size // param.pack_factor
                 shard_offset = shard_offset // param.pack_factor
@@ -1138,14 +1203,20 @@ class QKVParallelLinear(ColumnParallelLinear):
                 shard_size, shard_offset = adjust_bitsandbytes_4bit_shard(
                     param, orig_qkv_offsets, loaded_shard_id)
 
+            # 해당 param에 해당하는 Q/K/V weight 범위만 잘라냄
             param_data = param_data.narrow(output_dim, shard_offset,
                                            shard_size)
-            if loaded_shard_id == "q":
+        
+            # TP rank 기준으로 slicing할 크기와 시작 위치 계산
+            # shard_id 결정
+            if loaded_shard_id == "q": # Q는 모든 TP rank에 대해 분산
                 shard_id = tp_rank
-            else:
+            else: # K/V는 MQA일 경우 복제 → 복제 index만 계산
                 shard_id = tp_rank // self.num_kv_head_replicas
-            start_idx = shard_id * shard_size
 
+            # TP rank 기준으로 다시 slicing
+            start_idx = shard_id * shard_size
+            # 현재 TP rank에 해당하는 weight 범위만 가져옴
             if not is_sharded_weight:
                 loaded_weight = loaded_weight.narrow(output_dim, start_idx,
                                                      shard_size)
