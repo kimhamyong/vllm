@@ -1203,10 +1203,6 @@ class QKVParallelLinear(ColumnParallelLinear):
                 shard_size, shard_offset = adjust_bitsandbytes_4bit_shard(
                     param, orig_qkv_offsets, loaded_shard_id)
 
-            # 해당 param에 해당하는 Q/K/V weight 범위만 잘라냄
-            param_data = param_data.narrow(output_dim, shard_offset,
-                                           shard_size)
-        
             # TP rank 기준으로 slicing할 크기와 시작 위치 계산
             # shard_id 결정
             if loaded_shard_id == "q": # Q는 모든 TP rank에 대해 분산
@@ -1229,10 +1225,19 @@ class QKVParallelLinear(ColumnParallelLinear):
             end_idx = int(original_size * cumulative_ratios[shard_id + 1] / total_ratio)
             actual_shard_size = end_idx - start_idx
             
+            # param_data도 비율에 맞게 조정
+            param_start_idx = int(shard_size * cumulative_ratios[shard_id] / total_ratio)
+            param_actual_size = int(shard_size * weight_ratios[shard_id] / total_ratio)
+            
+            # 해당 param에 해당하는 Q/K/V weight 범위를 비율에 맞게 잘라냄
+            param_data = param_data.narrow(output_dim, shard_offset + param_start_idx,
+                                           param_actual_size)
+            
             # 가중치 분배 확인 로그
             print(f"✅[WEIGHT_DIST][rank {tp_rank}] {loaded_shard_id}_proj: "
                   f"ratio {weight_ratios[shard_id]}/{total_ratio}, "
-                  f"size {original_size}→{actual_shard_size} "
+                  f"param {shard_size}→{param_actual_size}, "
+                  f"weight {original_size}→{actual_shard_size} "
                   f"({start_idx}:{end_idx})")
             
             # 현재 TP rank에 해당하는 weight 범위만 가져옴
