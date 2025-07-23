@@ -295,8 +295,12 @@ class VocabParallelEmbedding(torch.nn.Module):
             params_dtype = torch.get_default_dtype()
         # Divide the weight matrix along the vocaburaly dimension.
         self.num_added_embeddings = self.num_embeddings - self.org_vocab_size
-        self.num_embeddings_per_partition = divide(self.num_embeddings_padded,
-                                                   self.tp_size)
+        
+        # 환경변수에서 가중치 분배 비율을 사용해서 현재 rank의 partition 크기 계산
+        weight_ratios = get_weight_distribution_ratios(self.tp_size)
+        total_ratio = sum(weight_ratios)
+        current_rank_ratio = weight_ratios[tp_rank]
+        self.num_embeddings_per_partition = int(self.num_embeddings_padded * current_rank_ratio / total_ratio)
         assert (self.shard_indices.num_elements_padded ==
                 self.num_embeddings_per_partition)
         self.num_org_embeddings_per_partition = (
@@ -322,14 +326,19 @@ class VocabParallelEmbedding(torch.nn.Module):
         layout outlined in the class docstring, based on the given tp_rank and
         tp_size."""
         num_added_embeddings_padded = vocab_size_padded - org_vocab_size_padded
-        padded_org_vocab_start_index, padded_org_vocab_end_index = (
-            vocab_range_from_global_vocab_size(org_vocab_size_padded, tp_rank,
-                                               tp_size))
-        padded_added_vocab_start_index, padded_added_vocab_end_index = (
-            vocab_range_from_global_vocab_size(num_added_embeddings_padded,
-                                               tp_rank,
-                                               tp_size,
-                                               offset=org_vocab_size))
+        
+        # 환경변수에서 가중치 분배 비율 가져오기
+        weight_ratios = get_weight_distribution_ratios(tp_size)
+        total_ratio = sum(weight_ratios)
+        cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+        
+        # 비율 기반으로 original vocabulary 범위 계산
+        padded_org_vocab_start_index = int(org_vocab_size_padded * cumulative_ratios[tp_rank] / total_ratio)
+        padded_org_vocab_end_index = int(org_vocab_size_padded * cumulative_ratios[tp_rank + 1] / total_ratio)
+        
+        # 비율 기반으로 added vocabulary 범위 계산 (offset 적용)
+        padded_added_vocab_start_index = int(num_added_embeddings_padded * cumulative_ratios[tp_rank] / total_ratio) + org_vocab_size
+        padded_added_vocab_end_index = int(num_added_embeddings_padded * cumulative_ratios[tp_rank + 1] / total_ratio) + org_vocab_size
         # remove padding
         org_vocab_start_index = min(padded_org_vocab_start_index,
                                     org_vocab_size)
@@ -360,14 +369,20 @@ class VocabParallelEmbedding(torch.nn.Module):
         base_embeddings: list[int] = []
         added_embeddings: list[int] = []
         padding: list[int] = []
+        # 비율 기반 range 계산을 위한 설정
+        weight_ratios = get_weight_distribution_ratios(self.tp_size)
+        total_ratio = sum(weight_ratios)
+        cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+        
         for tp_rank in range(self.tp_size):
             shard_indices = self._get_indices(self.num_embeddings_padded,
                                               self.org_vocab_size_padded,
                                               self.num_embeddings,
                                               self.org_vocab_size, tp_rank,
                                               self.tp_size)
-            range_start = self.num_embeddings_per_partition * tp_rank
-            range_end = self.num_embeddings_per_partition * (tp_rank + 1)
+            # 비율 기반으로 range 계산
+            range_start = int(self.num_embeddings_padded * cumulative_ratios[tp_rank] / total_ratio)
+            range_end = int(self.num_embeddings_padded * cumulative_ratios[tp_rank + 1] / total_ratio)
             base_embeddings.extend(
                 range(range_start,
                       range_start + shard_indices.num_org_elements))
