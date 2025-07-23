@@ -114,6 +114,33 @@ class CustomLoader(BaseModelLoader):
         return {"ip": ip, "files": files}
 
 #-----------------------------------------------------------------------------------
+    def get_all_tags(tp_size: int) -> list[str]:
+        """00, 01, 10, 11, 20, 21, … 순서대로 tag 문자열을 반환"""
+        return [f"{r}{p}" for r in range(tp_size) for p in (0, 1)]
+
+    def split_tags_3_to_1(tp_size: int) -> list[tuple[str, ...]]:
+        """
+        반환값 = [rank0용 tuple, rank1용 tuple, …]
+        규칙 : 앞쪽 half rank → 3개씩, 뒤쪽 half rank → 1개씩
+        """
+        half           = tp_size // 2
+        tags           = CustomLoader.get_all_tags(tp_size)   # 길이 = tp_size*2
+        per_rank       = []                      # 결과
+        idx            = 0
+
+        # 앞쪽 half : 3개씩
+        for _ in range(half):
+            per_rank.append(tuple(tags[idx: idx+3]))
+            idx += 3
+
+        # 뒤쪽 half : 1개씩
+        for _ in range(half):
+            per_rank.append((tags[idx],))        # 1개
+            idx += 1
+
+        return per_rank
+
+#-----------------------------------------------------------------------------------
     def load_weights(self, model: nn.Module,
                      model_config: ModelConfig) -> None:
         from vllm.distributed import get_tensor_model_parallel_rank
@@ -133,14 +160,7 @@ class CustomLoader(BaseModelLoader):
         half       = world_size // 2
 
         # ── rank별로 가져올 shard 태그 결정 ─────────────────────────────
-        if rank < half:               # rank 0~(half-1)
-            desired_tags = (
-                f"{rank}0",           # 자기 0번
-                f"{rank}1",           # 자기 1번
-                f"{rank+half}0",      # 뒷 노드의 0번
-            )
-        else:                         # rank ≥ half
-            desired_tags = (f"{rank}1",)  # 자기 1번만
+        desired_tags = CustomLoader.split_tags_3_to_1(world_size)[rank]
         print(f"🅾️[Rank {rank}] Desired tags: {desired_tags}")
 
         # 로컬에서 shard 파일 탐색

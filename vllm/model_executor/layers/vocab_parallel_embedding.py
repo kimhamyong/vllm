@@ -208,6 +208,8 @@ class VocabParallelEmbedding(torch.nn.Module):
                  prefix: str = ""):
         super().__init__()
 
+        print("[👌👌] vocal parallel embedding")
+
         # Keep the input dimensions.
         tp_rank = get_tensor_model_parallel_rank()
         self.tp_size = get_tensor_model_parallel_world_size()
@@ -461,6 +463,10 @@ class ParallelLMHead(VocabParallelEmbedding):
         super().__init__(num_embeddings, embedding_dim, params_dtype,
                          org_num_embeddings, padding_size, quant_config,
                          prefix)
+        
+        print("[👌👌] ParallelLMHead")
+
+
         self.quant_config = quant_config
         if bias:
             self.bias = Parameter(
