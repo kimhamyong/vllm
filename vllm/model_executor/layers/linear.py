@@ -1459,6 +1459,7 @@ class RowParallelLinear(LinearBase):
 
         param.load_row_parallel_weight(loaded_weight=loaded_weight)
 
+    # 실제 추론 시 텐서를 어떻게 처리할지 정의
     def forward(
         self, input_
     ) -> Union[torch.Tensor, tuple[torch.Tensor, Optional[Parameter]]]:
@@ -1466,9 +1467,25 @@ class RowParallelLinear(LinearBase):
             input_parallel = input_
         else:
             tp_rank = get_tensor_model_parallel_rank()
-            splitted_input = split_tensor_along_last_dim(
-                input_, num_partitions=self.tp_size)
-            input_parallel = splitted_input[tp_rank].contiguous()
+            tp_size = get_tensor_model_parallel_world_size()
+            
+            # 환경변수에서 가중치 분배 비율 가져오기
+            weight_ratios = get_weight_distribution_ratios(tp_size)
+            
+            # 비율에 맞게 입력 텐서 분할
+            total_ratio = sum(weight_ratios)
+            cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+            
+            # 입력의 마지막 차원 크기
+            input_size = input_.shape[-1]
+            start_idx = int(input_size * cumulative_ratios[tp_rank] / total_ratio)
+            end_idx = int(input_size * cumulative_ratios[tp_rank + 1] / total_ratio)
+            actual_input_size = end_idx - start_idx
+            
+            print(f"🔍[RowParallel Forward] rank {tp_rank}: input {input_size}→{actual_input_size} ({start_idx}:{end_idx})")
+            
+            # 입력을 비율에 맞게 슬라이싱
+            input_parallel = input_[..., start_idx:end_idx].contiguous()
 
         # Matrix multiply.
         assert self.quant_method is not None
