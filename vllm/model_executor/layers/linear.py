@@ -528,13 +528,38 @@ class ColumnParallelLinear(LinearBase):
             #현재 rank가 맡게 될 조각의 크기 (한 rank가 담당할 weight 길이)
             shard_size = param_data.shape[output_dim]
 
-            #현재 rank가 담당할 weight의 시작 위치 인덱스
-            start_idx = tp_rank * shard_size
-            print(f"✅[narrow] shape={param_data.shape}, output_dim={output_dim}, tp_rank={tp_rank}, shard_size={shard_size}, start_idx={start_idx}")
+            # 환경변수에서 가중치 분배 비율 가져오기
+            tp_size = get_tensor_model_parallel_world_size()
+            weight_ratios = get_weight_distribution_ratios(tp_size)
+            print(f"🔍[DEBUG] VLLM_WEIGHT_RATIOS={os.environ.get('VLLM_WEIGHT_RATIOS', 'None')}, tp_size={tp_size}, ratios={weight_ratios}")
+            
+            # 비율 기반으로 각 rank의 시작 위치와 크기 계산
+            total_ratio = sum(weight_ratios)
+            cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+            
+            # 현재 tp_rank에 해당하는 시작 위치와 크기
+            original_size = loaded_weight.shape[output_dim]
+            start_idx = int(original_size * cumulative_ratios[tp_rank] / total_ratio)
+            end_idx = int(original_size * cumulative_ratios[tp_rank + 1] / total_ratio)
+            actual_shard_size = end_idx - start_idx
+            
+            # param_data도 비율에 맞게 조정
+            param_start_idx = int(shard_size * cumulative_ratios[tp_rank] / total_ratio)
+            param_actual_size = int(shard_size * weight_ratios[tp_rank] / total_ratio)
+            
+            # param_data를 비율에 맞게 조정
+            param_data = param_data.narrow(output_dim, param_start_idx, param_actual_size)
+            
+            # 가중치 분배 확인 로그
+            print(f"✅[WEIGHT_DIST][rank {tp_rank}] ColumnParallel: "
+                  f"ratio {weight_ratios[tp_rank]}/{total_ratio}, "
+                  f"param {shard_size}→{param_actual_size}, "
+                  f"weight {original_size}→{actual_shard_size} "
+                  f"({start_idx}:{end_idx})")
             
             #narrow() -> 텐서를 특정 축에서 부분 슬라이싱
             loaded_weight = loaded_weight.narrow(output_dim, start_idx,
-                                                 shard_size)
+                                                 actual_shard_size)
 
         # Special case for loading scales off disk, which often do not
         # have a shape (such as in the case of AutoFP8).
@@ -1383,9 +1408,37 @@ class RowParallelLinear(LinearBase):
         param_data = param.data
         if input_dim is not None and not is_sharded_weight:
             shard_size = param_data.shape[input_dim]
-            start_idx = tp_rank * shard_size
+
+            # 환경변수에서 가중치 분배 비율 가져오기
+            weight_ratios = get_weight_distribution_ratios(tp_size)
+            print(f"🔍[DEBUG] VLLM_WEIGHT_RATIOS={os.environ.get('VLLM_WEIGHT_RATIOS', 'None')}, tp_size={tp_size}, ratios={weight_ratios}")
+            
+            # 비율 기반으로 각 rank의 시작 위치와 크기 계산
+            total_ratio = sum(weight_ratios)
+            cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+            
+            # 현재 tp_rank에 해당하는 시작 위치와 크기
+            original_size = loaded_weight.shape[input_dim]
+            start_idx = int(original_size * cumulative_ratios[tp_rank] / total_ratio)
+            end_idx = int(original_size * cumulative_ratios[tp_rank + 1] / total_ratio)
+            actual_shard_size = end_idx - start_idx
+            
+            # param_data도 비율에 맞게 조정
+            param_start_idx = int(shard_size * cumulative_ratios[tp_rank] / total_ratio)
+            param_actual_size = int(shard_size * weight_ratios[tp_rank] / total_ratio)
+            
+            # param_data를 비율에 맞게 조정
+            param_data = param_data.narrow(input_dim, param_start_idx, param_actual_size)
+            
+            # 가중치 분배 확인 로그
+            print(f"✅[WEIGHT_DIST][rank {tp_rank}] RowParallel: "
+                  f"ratio {weight_ratios[tp_rank]}/{total_ratio}, "
+                  f"param {shard_size}→{param_actual_size}, "
+                  f"weight {original_size}→{actual_shard_size} "
+                  f"({start_idx}:{end_idx})")
+            
             loaded_weight = loaded_weight.narrow(input_dim, start_idx,
-                                                 shard_size)
+                                                 actual_shard_size)
 
         # Special case for loading scales off disk, which often do not
         # have a shape (such as in the case of AutoFP8).
