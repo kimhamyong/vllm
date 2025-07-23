@@ -1214,12 +1214,24 @@ class QKVParallelLinear(ColumnParallelLinear):
             else: # K/V는 MQA일 경우 복제 → 복제 index만 계산
                 shard_id = tp_rank // self.num_kv_head_replicas
 
-            # TP rank 기준으로 다시 slicing
-            start_idx = shard_id * shard_size
+            # 환경변수에서 가중치 분배 비율 가져오기
+            tp_size = get_tensor_model_parallel_world_size()
+            weight_ratios = get_weight_distribution_ratios(tp_size)
+            
+            # 비율 기반으로 각 rank의 시작 위치와 크기 계산
+            total_ratio = sum(weight_ratios)
+            cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+            
+            # 현재 shard_id에 해당하는 시작 위치와 크기
+            original_size = loaded_weight.shape[output_dim]
+            start_idx = int(original_size * cumulative_ratios[shard_id] / total_ratio)
+            end_idx = int(original_size * cumulative_ratios[shard_id + 1] / total_ratio)
+            actual_shard_size = end_idx - start_idx
+            
             # 현재 TP rank에 해당하는 weight 범위만 가져옴
             if not is_sharded_weight:
                 loaded_weight = loaded_weight.narrow(output_dim, start_idx,
-                                                     shard_size)
+                                                     actual_shard_size)
 
         # Special case for for AQLM codebooks.
         elif is_metadata:
