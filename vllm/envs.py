@@ -805,6 +805,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_DP_SIZE":
     lambda: int(os.getenv("VLLM_DP_SIZE", "1")),
 
+    # Weight distribution ratios for tensor parallel ranks (e.g., "3:1" or "1:2:2:1")
+    "VLLM_WEIGHT_RATIOS":
+    lambda: os.getenv("VLLM_WEIGHT_RATIOS", None),
+
     # IP address of the master node in the data parallel setting
     "VLLM_DP_MASTER_IP":
     lambda: os.getenv("VLLM_DP_MASTER_IP", "127.0.0.1"),

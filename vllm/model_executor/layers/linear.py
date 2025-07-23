@@ -1217,6 +1217,7 @@ class QKVParallelLinear(ColumnParallelLinear):
             # 환경변수에서 가중치 분배 비율 가져오기
             tp_size = get_tensor_model_parallel_world_size()
             weight_ratios = get_weight_distribution_ratios(tp_size)
+            print(f"🔍[DEBUG] VLLM_WEIGHT_RATIOS={os.environ.get('VLLM_WEIGHT_RATIOS', 'None')}, tp_size={tp_size}, ratios={weight_ratios}")
             
             # 비율 기반으로 각 rank의 시작 위치와 크기 계산
             total_ratio = sum(weight_ratios)
@@ -1227,6 +1228,12 @@ class QKVParallelLinear(ColumnParallelLinear):
             start_idx = int(original_size * cumulative_ratios[shard_id] / total_ratio)
             end_idx = int(original_size * cumulative_ratios[shard_id + 1] / total_ratio)
             actual_shard_size = end_idx - start_idx
+            
+            # 가중치 분배 확인 로그
+            print(f"✅[WEIGHT_DIST][rank {tp_rank}] {loaded_shard_id}_proj: "
+                  f"ratio {weight_ratios[shard_id]}/{total_ratio}, "
+                  f"size {original_size}→{actual_shard_size} "
+                  f"({start_idx}:{end_idx})")
             
             # 현재 TP rank에 해당하는 weight 범위만 가져옴
             if not is_sharded_weight:
