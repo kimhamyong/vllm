@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Optional
@@ -12,6 +13,7 @@ from torch.nn.parameter import Parameter, UninitializedParameter
 from vllm.distributed import (divide, get_tensor_model_parallel_rank,
                               get_tensor_model_parallel_world_size,
                               tensor_model_parallel_all_reduce)
+from vllm.logger import init_logger
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig, QuantizeMethodBase, method_has_implemented_embedding)
 from vllm.model_executor.layers.utils import dispatch_unquantized_gemm
@@ -19,7 +21,46 @@ from vllm.model_executor.parameter import BasevLLMParameter
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.platforms import current_platform
 
+logger = init_logger(__name__)
+
 DEFAULT_VOCAB_PADDING_SIZE = 64
+
+
+def get_weight_distribution_ratios(tp_size: int) -> list[int]:
+    """환경 변수에서 가중치 분배 비율을 읽어옵니다.
+    
+    환경 변수 VLLM_WEIGHT_RATIOS 형식: "3:1" 또는 "1:2:2:1"
+    기본값: 균등 분배 (모든 rank에 동일한 비율)
+    
+    Args:
+        tp_size: tensor parallel world size
+        
+    Returns:
+        각 rank의 가중치 비율 리스트
+    """
+    env_ratios = os.environ.get('VLLM_WEIGHT_RATIOS', None)
+    
+    if env_ratios:
+        try:
+            ratios = [int(r) for r in env_ratios.split(':')]
+            if len(ratios) != tp_size:
+                logger.warning(
+                    f"VLLM_WEIGHT_RATIOS length ({len(ratios)}) doesn't match "
+                    f"tp_size ({tp_size}). Using uniform distribution.")
+                return [1] * tp_size
+            if any(r <= 0 for r in ratios):
+                logger.warning(
+                    "VLLM_WEIGHT_RATIOS contains non-positive values. "
+                    "Using uniform distribution.")
+                return [1] * tp_size
+            return ratios
+        except ValueError:
+            logger.warning(
+                f"Invalid VLLM_WEIGHT_RATIOS format: {env_ratios}. "
+                "Expected format: '3:1' or '1:2:2:1'. Using uniform distribution.")
+            return [1] * tp_size
+    
+    return [1] * tp_size
 
 
 class UnquantizedEmbeddingMethod(QuantizeMethodBase):
@@ -463,9 +504,6 @@ class ParallelLMHead(VocabParallelEmbedding):
         super().__init__(num_embeddings, embedding_dim, params_dtype,
                          org_num_embeddings, padding_size, quant_config,
                          prefix)
-        
-        print("[👌👌] ParallelLMHead")
-
 
         self.quant_config = quant_config
         if bias:
