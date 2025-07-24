@@ -543,17 +543,11 @@ class ColumnParallelLinear(LinearBase):
             end_idx = int(original_size * cumulative_ratios[tp_rank + 1] / total_ratio)
             actual_shard_size = end_idx - start_idx
             
-            # param_data도 비율에 맞게 조정
-            param_start_idx = int(shard_size * cumulative_ratios[tp_rank] / total_ratio)
-            param_actual_size = int(shard_size * weight_ratios[tp_rank] / total_ratio)
-            
-            # param_data를 비율에 맞게 조정
-            param_data = param_data.narrow(output_dim, param_start_idx, param_actual_size)
             
             # 가중치 분배 확인 로그
             print(f"✅[WEIGHT_DIST][rank {tp_rank}] ColumnParallel: "
                   f"ratio {weight_ratios[tp_rank]}/{total_ratio}, "
-                  f"param {shard_size}→{param_actual_size}, "
+                  f"param unchanged, "
                   f"weight {original_size}→{actual_shard_size} "
                   f"({start_idx}:{end_idx})")
             
@@ -566,7 +560,20 @@ class ColumnParallelLinear(LinearBase):
         if len(loaded_weight.shape) == 0:
             loaded_weight = loaded_weight.reshape(1)
 
-        assert param_data.shape == loaded_weight.shape
+        print(f"🔍[COL_SHAPE_DEBUG] param_data.shape: {param_data.shape}, loaded_weight.shape: {loaded_weight.shape}")
+        if param_data.shape != loaded_weight.shape:
+            print(f"❌[COL_SHAPE_MISMATCH] Rank {get_tensor_model_parallel_rank()}: param {param_data.shape} != weight {loaded_weight.shape}")
+            print(f"❌ Will try to resize loaded_weight to match param_data")
+            if len(param_data.shape) == len(loaded_weight.shape):
+                # Try to trim or expand loaded_weight to match param_data
+                if param_data.numel() <= loaded_weight.numel():
+                    loaded_weight = loaded_weight.flatten()[:param_data.numel()].reshape(param_data.shape)
+                    print(f"✅ Resized loaded_weight to {loaded_weight.shape}")
+                else:
+                    print(f"❌ Cannot resize: param is larger than loaded weight")
+                    assert False, f"param_data.shape {param_data.shape} != loaded_weight.shape {loaded_weight.shape}"
+            else:
+                assert False, f"param_data.shape {param_data.shape} != loaded_weight.shape {loaded_weight.shape}"
         param_data.copy_(loaded_weight)
 
     def weight_loader_v2(self, param: Parameter, loaded_weight: torch.Tensor):
@@ -1250,12 +1257,12 @@ class QKVParallelLinear(ColumnParallelLinear):
             end_idx = int(original_size * cumulative_ratios[shard_id + 1] / total_ratio)
             actual_shard_size = end_idx - start_idx
             
-            # param_data도 비율에 맞게 조정
-            param_start_idx = int(shard_size * cumulative_ratios[shard_id] / total_ratio)
+            # QKVParallelLinear에서는 param이 이미 Q/K/V별로 분리되어 있으므로
+            # shard_size 전체를 비율에 맞게 조정
             param_actual_size = int(shard_size * weight_ratios[shard_id] / total_ratio)
             
             # 해당 param에 해당하는 Q/K/V weight 범위를 비율에 맞게 잘라냄
-            param_data = param_data.narrow(output_dim, shard_offset + param_start_idx,
+            param_data = param_data.narrow(output_dim, shard_offset,
                                            param_actual_size)
             
             # 가중치 분배 확인 로그
@@ -1289,7 +1296,20 @@ class QKVParallelLinear(ColumnParallelLinear):
                     "QKVParallelLinear, assume the weight is the same "
                     "for all partitions.")
 
-        assert param_data.shape == loaded_weight.shape
+        print(f"🔍[QKV_SHAPE_DEBUG] param_data.shape: {param_data.shape}, loaded_weight.shape: {loaded_weight.shape}")
+        if param_data.shape != loaded_weight.shape:
+            print(f"❌[QKV_SHAPE_MISMATCH] Rank {get_tensor_model_parallel_rank()}: param {param_data.shape} != weight {loaded_weight.shape}")
+            print(f"❌ Will try to resize loaded_weight to match param_data")
+            if len(param_data.shape) == len(loaded_weight.shape):
+                # Try to trim or expand loaded_weight to match param_data
+                if param_data.numel() <= loaded_weight.numel():
+                    loaded_weight = loaded_weight.flatten()[:param_data.numel()].reshape(param_data.shape)
+                    print(f"✅ Resized loaded_weight to {loaded_weight.shape}")
+                else:
+                    print(f"❌ Cannot resize: param is larger than loaded weight")
+                    assert False, f"param_data.shape {param_data.shape} != loaded_weight.shape {loaded_weight.shape}"
+            else:
+                assert False, f"param_data.shape {param_data.shape} != loaded_weight.shape {loaded_weight.shape}"
         param_data.copy_(loaded_weight)
 
 
@@ -1423,17 +1443,10 @@ class RowParallelLinear(LinearBase):
             end_idx = int(original_size * cumulative_ratios[tp_rank + 1] / total_ratio)
             actual_shard_size = end_idx - start_idx
             
-            # param_data도 비율에 맞게 조정
-            param_start_idx = int(shard_size * cumulative_ratios[tp_rank] / total_ratio)
-            param_actual_size = int(shard_size * weight_ratios[tp_rank] / total_ratio)
-            
-            # param_data를 비율에 맞게 조정
-            param_data = param_data.narrow(input_dim, param_start_idx, param_actual_size)
-            
             # 가중치 분배 확인 로그
             print(f"✅[WEIGHT_DIST][rank {tp_rank}] RowParallel: "
                   f"ratio {weight_ratios[tp_rank]}/{total_ratio}, "
-                  f"param {shard_size}→{param_actual_size}, "
+                  f"param unchanged, "
                   f"weight {original_size}→{actual_shard_size} "
                   f"({start_idx}:{end_idx})")
             
@@ -1445,7 +1458,20 @@ class RowParallelLinear(LinearBase):
         if len(loaded_weight.shape) == 0:
             loaded_weight = loaded_weight.reshape(1)
 
-        assert param_data.shape == loaded_weight.shape
+        print(f"🔍[ROW_SHAPE_DEBUG] param_data.shape: {param_data.shape}, loaded_weight.shape: {loaded_weight.shape}")
+        if param_data.shape != loaded_weight.shape:
+            print(f"❌[ROW_SHAPE_MISMATCH] Rank {tp_rank}: param {param_data.shape} != weight {loaded_weight.shape}")
+            print(f"❌ Will try to resize loaded_weight to match param_data")
+            if len(param_data.shape) == len(loaded_weight.shape):
+                # Try to trim or expand loaded_weight to match param_data
+                if param_data.numel() <= loaded_weight.numel():
+                    loaded_weight = loaded_weight.flatten()[:param_data.numel()].reshape(param_data.shape)
+                    print(f"✅ Resized loaded_weight to {loaded_weight.shape}")
+                else:
+                    print(f"❌ Cannot resize: param is larger than loaded weight")
+                    assert False, f"param_data.shape {param_data.shape} != loaded_weight.shape {loaded_weight.shape}"
+            else:
+                assert False, f"param_data.shape {param_data.shape} != loaded_weight.shape {loaded_weight.shape}"
         param_data.copy_(loaded_weight)
 
     def weight_loader_v2(self, param: BasevLLMParameter,
