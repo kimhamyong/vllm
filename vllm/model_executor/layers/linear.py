@@ -1258,8 +1258,9 @@ class QKVParallelLinear(ColumnParallelLinear):
             actual_shard_size = end_idx - start_idx
             
             # QKVParallelLinear에서는 param이 이미 Q/K/V별로 분리되어 있으므로
-            # shard_size 전체를 비율에 맞게 조정
-            param_actual_size = int(shard_size * weight_ratios[shard_id] / total_ratio)
+            # tp_rank 기준으로 비율에 맞게 조정 (균등분배는 정규화)
+            ratio_multiplier = tp_size if len(set(weight_ratios)) == 1 else 1
+            param_actual_size = int(shard_size * weight_ratios[tp_rank] * ratio_multiplier / total_ratio)
             
             # 해당 param에 해당하는 Q/K/V weight 범위를 비율에 맞게 잘라냄
             param_data = param_data.narrow(output_dim, shard_offset,
@@ -1267,7 +1268,7 @@ class QKVParallelLinear(ColumnParallelLinear):
             
             # 가중치 분배 확인 로그
             print(f"✅[WEIGHT_DIST][rank {tp_rank}] {loaded_shard_id}_proj: "
-                  f"ratio {weight_ratios[shard_id]}/{total_ratio}, "
+                  f"ratio {weight_ratios[tp_rank]}/{total_ratio}, "
                   f"param {shard_size}→{param_actual_size}, "
                   f"weight {original_size}→{actual_shard_size} "
                   f"({start_idx}:{end_idx})")
