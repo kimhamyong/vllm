@@ -448,15 +448,35 @@ class ColumnParallelLinear(LinearBase):
         self.tp_size = get_tensor_model_parallel_world_size()
         self.input_size_per_partition = input_size
 
-        #열 방향으로 나눔 → 출력 차원을 tp_size 개로 나눔
-        self.output_size_per_partition = divide(output_size, self.tp_size)
+        # 환경변수에서 가중치 분배 비율 가져오기
+        tp_rank = get_tensor_model_parallel_rank()
+        weight_ratios = get_weight_distribution_ratios(self.tp_size)
+        
+        #열 방향으로 나눔 → 출력 차원을 비율에 맞게 나눔
+        if len(set(weight_ratios)) == 1:
+            # 균등 분배: 기존 방식 사용
+            self.output_size_per_partition = divide(output_size, self.tp_size)
+        else:
+            # 비균등 분배: 비율 기반 계산
+            total_ratio = sum(weight_ratios)
+            self.output_size_per_partition = int(output_size * weight_ratios[tp_rank] / total_ratio)
+        
         self.output_partition_sizes = [self.output_size_per_partition]
         # If QKV or MergedColumn, use output size of each partition.
         if hasattr(self, "output_sizes"):
-            self.output_partition_sizes = [
-                divide(output_size, self.tp_size)
-                for output_size in self.output_sizes
-            ]
+            if len(weight_ratios) > 1 and any(r != weight_ratios[0] for r in weight_ratios):
+                # 비균등 분배: 각 output_size에 대해 비율 기반 계산
+                total_ratio = sum(weight_ratios)
+                self.output_partition_sizes = [
+                    int(output_size * weight_ratios[tp_rank] / total_ratio)
+                    for output_size in self.output_sizes
+                ]
+            else:
+                # 균등 분배: 기존 방식 사용
+                self.output_partition_sizes = [
+                    divide(output_size, self.tp_size)
+                    for output_size in self.output_sizes
+                ]
 
         super().__init__(input_size,
                          output_size,
@@ -524,36 +544,25 @@ class ColumnParallelLinear(LinearBase):
 
         param_data = param.data
         if output_dim is not None and not is_sharded_weight:
-
-            #현재 rank가 맡게 될 조각의 크기 (한 rank가 담당할 weight 길이)
             shard_size = param_data.shape[output_dim]
-
+            
             # 환경변수에서 가중치 분배 비율 가져오기
             tp_size = get_tensor_model_parallel_world_size()
             weight_ratios = get_weight_distribution_ratios(tp_size)
-            print(f"🔍[DEBUG] VLLM_WEIGHT_RATIOS={os.environ.get('VLLM_WEIGHT_RATIOS', 'None')}, tp_size={tp_size}, ratios={weight_ratios}")
             
-            # 비율 기반으로 각 rank의 시작 위치와 크기 계산
-            total_ratio = sum(weight_ratios)
-            cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+            if len(set(weight_ratios)) == 1:
+                # 균등 분배: 원래 방식 사용
+                start_idx = tp_rank * shard_size
+            else:
+                # 비균등 분배: 전체 원본 크기 복원 후 비율 계산
+                total_ratio = sum(weight_ratios)
+                cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+                
+                # 전체 원본 크기 복원: shard_size * total_ratio / weight_ratios[tp_rank]
+                full_original_size = int(shard_size * total_ratio / weight_ratios[tp_rank])
+                start_idx = int(full_original_size * cumulative_ratios[tp_rank] / total_ratio)
             
-            # 현재 tp_rank에 해당하는 시작 위치와 크기
-            original_size = loaded_weight.shape[output_dim]
-            start_idx = int(original_size * cumulative_ratios[tp_rank] / total_ratio)
-            end_idx = int(original_size * cumulative_ratios[tp_rank + 1] / total_ratio)
-            actual_shard_size = end_idx - start_idx
-            
-            
-            # 가중치 분배 확인 로그
-            print(f"✅[WEIGHT_DIST][rank {tp_rank}] ColumnParallel: "
-                  f"ratio {weight_ratios[tp_rank]}/{total_ratio}, "
-                  f"param unchanged, "
-                  f"weight {original_size}→{actual_shard_size} "
-                  f"({start_idx}:{end_idx})")
-            
-            #narrow() -> 텐서를 특정 축에서 부분 슬라이싱
-            loaded_weight = loaded_weight.narrow(output_dim, start_idx,
-                                                 actual_shard_size)
+            loaded_weight = loaded_weight.narrow(output_dim, start_idx, shard_size)
 
         # Special case for loading scales off disk, which often do not
         # have a shape (such as in the case of AutoFP8).
@@ -941,25 +950,41 @@ class QKVParallelLinear(ColumnParallelLinear):
 
         # Divide the weight matrix along the last dimension.
         tp_size = get_tensor_model_parallel_world_size()
-        # 이 rank가 담당할 head 수 -> 전체 head 수를 TP world size만큼 나눈 값
-        self.num_heads = divide(self.total_num_heads, tp_size)
+        tp_rank = get_tensor_model_parallel_rank()
+        
+        # 환경변수에서 가중치 분배 비율 가져오기
+        weight_ratios = get_weight_distribution_ratios(tp_size)
+        
+        # 이 rank가 담당할 head 수 -> 비율에 맞게 계산
+        if len(set(weight_ratios)) == 1:
+            # 균등 분배: 기존 방식 사용
+            self.num_heads = divide(self.total_num_heads, tp_size)
+        else:
+            # 비균등 분배: 비율 기반 계산
+            total_ratio = sum(weight_ratios)
+            self.num_heads = int(self.total_num_heads * weight_ratios[tp_rank] / total_ratio)
+            
         if tp_size >= self.total_num_kv_heads:
             self.num_kv_heads = 1
             self.num_kv_head_replicas = divide(tp_size,
                                                self.total_num_kv_heads)
         else:
-            self.num_kv_heads = divide(self.total_num_kv_heads, tp_size)
+            if len(set(weight_ratios)) == 1:
+                # 균등 분배: 기존 방식 사용
+                self.num_kv_heads = divide(self.total_num_kv_heads, tp_size)
+            else:
+                # 비균등 분배: 비율 기반 계산
+                self.num_kv_heads = int(self.total_num_kv_heads * weight_ratios[tp_rank] / total_ratio)
             self.num_kv_head_replicas = 1
         input_size = self.hidden_size
-        output_size = (self.num_heads +
-                       2 * self.num_kv_heads) * tp_size * self.head_size
+        output_size = (self.total_num_heads +
+                       2 * self.total_num_kv_heads) * self.head_size
         
-        # weight를 Q, K, V 3개 projection 용도로 쪼갤 기준
-        # TP 구조에 따라 확장된 각 block의 크기 (head_count * head_size * tp_size)
+        # 전체 Q, K, V projection의 크기 (weight loading용)
         self.output_sizes = [
-            self.num_heads * self.head_size * tp_size,  # q_proj
-            self.num_kv_heads * self.head_size * tp_size,  # k_proj
-            self.num_kv_heads * self.head_size * tp_size,  # v_proj 
+            self.total_num_heads * self.head_size,  # q_proj
+            self.total_num_kv_heads * self.head_size,  # k_proj
+            self.total_num_kv_heads * self.head_size,  # v_proj 
         ]
 
         # Q + K + V 전체 projection을 합친 총 출력 차원을 설정
@@ -1201,6 +1226,8 @@ class QKVParallelLinear(ColumnParallelLinear):
                 shard_offset = (self.num_heads +
                                 self.num_kv_heads) * self.head_size
                 shard_size = self.num_kv_heads * self.head_size
+            
+            print(f"🔍[QKV_OFFSET_DEBUG] Rank {tp_rank}, {loaded_shard_id}: offset={shard_offset}, size={shard_size}, param_dim={param.data.shape[output_dim]}")
             # Special case for Quantized Weights.
             # If quantized, we need to adjust the offset and size to account
             # for the packing.
@@ -1235,48 +1262,37 @@ class QKVParallelLinear(ColumnParallelLinear):
                 shard_size, shard_offset = adjust_bitsandbytes_4bit_shard(
                     param, orig_qkv_offsets, loaded_shard_id)
 
-            # TP rank 기준으로 slicing할 크기와 시작 위치 계산
-            # shard_id 결정
-            if loaded_shard_id == "q": # Q는 모든 TP rank에 대해 분산
+            param_data = param.data.narrow(output_dim, shard_offset,
+                                           shard_size)
+            if loaded_shard_id == "q":
                 shard_id = tp_rank
-            else: # K/V는 MQA일 경우 복제 → 복제 index만 계산
+            else:
                 shard_id = tp_rank // self.num_kv_head_replicas
-
+            
             # 환경변수에서 가중치 분배 비율 가져오기
             tp_size = get_tensor_model_parallel_world_size()
             weight_ratios = get_weight_distribution_ratios(tp_size)
-            print(f"🔍[DEBUG] VLLM_WEIGHT_RATIOS={os.environ.get('VLLM_WEIGHT_RATIOS', 'None')}, tp_size={tp_size}, ratios={weight_ratios}")
             
-            # 비율 기반으로 각 rank의 시작 위치와 크기 계산
-            total_ratio = sum(weight_ratios)
-            cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
-            
-            # 현재 shard_id에 해당하는 시작 위치와 크기
-            original_size = loaded_weight.shape[output_dim]
-            start_idx = int(original_size * cumulative_ratios[shard_id] / total_ratio)
-            end_idx = int(original_size * cumulative_ratios[shard_id + 1] / total_ratio)
-            actual_shard_size = end_idx - start_idx
-            
-            # QKVParallelLinear에서는 param이 이미 Q/K/V별로 분리되어 있으므로
-            # tp_rank 기준으로 비율에 맞게 조정 (균등분배는 정규화)
-            ratio_multiplier = tp_size if len(set(weight_ratios)) == 1 else 1
-            param_actual_size = int(shard_size * weight_ratios[tp_rank] * ratio_multiplier / total_ratio)
-            
-            # 해당 param에 해당하는 Q/K/V weight 범위를 비율에 맞게 잘라냄
-            param_data = param_data.narrow(output_dim, shard_offset,
-                                           param_actual_size)
-            
-            # 가중치 분배 확인 로그
-            print(f"✅[WEIGHT_DIST][rank {tp_rank}] {loaded_shard_id}_proj: "
-                  f"ratio {weight_ratios[tp_rank]}/{total_ratio}, "
-                  f"param {shard_size}→{param_actual_size}, "
-                  f"weight {original_size}→{actual_shard_size} "
-                  f"({start_idx}:{end_idx})")
-            
-            # 현재 TP rank에 해당하는 weight 범위만 가져옴
+            # 비율 기반으로 시작 위치 계산
+            if len(set(weight_ratios)) == 1:
+                # 균등 분배
+                start_idx = shard_id * shard_size
+            else:
+                # 비균등 분배: 비율 기반 계산
+                total_ratio = sum(weight_ratios)
+                cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+                
+                # 해당 projection(Q/K/V)의 전체 크기 계산
+                if loaded_shard_id == "q":
+                    full_projection_size = self.total_num_heads * self.head_size
+                else:  # K 또는 V
+                    full_projection_size = self.total_num_kv_heads * self.head_size
+                
+                start_idx = int(full_projection_size * cumulative_ratios[shard_id] / total_ratio)
+
             if not is_sharded_weight:
                 loaded_weight = loaded_weight.narrow(output_dim, start_idx,
-                                                     actual_shard_size)
+                                                     shard_size)
 
         # Special case for for AQLM codebooks.
         elif is_metadata:
@@ -1363,7 +1379,19 @@ class RowParallelLinear(LinearBase):
         # Divide the weight matrix along the first dimension.
         self.tp_rank = get_tensor_model_parallel_rank()
         self.tp_size = get_tensor_model_parallel_world_size()
-        self.input_size_per_partition = divide(input_size, self.tp_size)
+        
+        # 환경변수에서 가중치 분배 비율 가져오기
+        weight_ratios = get_weight_distribution_ratios(self.tp_size)
+        
+        # 입력 차원을 비율에 맞게 나눔
+        if len(set(weight_ratios)) == 1:
+            # 균등 분배: 기존 방식 사용
+            self.input_size_per_partition = divide(input_size, self.tp_size)
+        else:
+            # 비균등 분배: 비율 기반 계산
+            total_ratio = sum(weight_ratios)
+            self.input_size_per_partition = int(input_size * weight_ratios[self.tp_rank] / total_ratio)
+        
         self.output_size_per_partition = output_size
         self.output_partition_sizes = [output_size]
 
@@ -1429,30 +1457,23 @@ class RowParallelLinear(LinearBase):
         param_data = param.data
         if input_dim is not None and not is_sharded_weight:
             shard_size = param_data.shape[input_dim]
-
+            
             # 환경변수에서 가중치 분배 비율 가져오기
             weight_ratios = get_weight_distribution_ratios(tp_size)
-            print(f"🔍[DEBUG] VLLM_WEIGHT_RATIOS={os.environ.get('VLLM_WEIGHT_RATIOS', 'None')}, tp_size={tp_size}, ratios={weight_ratios}")
             
-            # 비율 기반으로 각 rank의 시작 위치와 크기 계산
-            total_ratio = sum(weight_ratios)
-            cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+            if len(set(weight_ratios)) == 1:
+                # 균등 분배: 원래 방식 사용
+                start_idx = tp_rank * shard_size
+            else:
+                # 비균등 분배: 전체 원본 크기 복원 후 비율 계산
+                total_ratio = sum(weight_ratios)
+                cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+                
+                # 전체 원본 크기 복원: shard_size * total_ratio / weight_ratios[tp_rank]
+                full_original_size = int(shard_size * total_ratio / weight_ratios[tp_rank])
+                start_idx = int(full_original_size * cumulative_ratios[tp_rank] / total_ratio)
             
-            # 현재 tp_rank에 해당하는 시작 위치와 크기
-            original_size = loaded_weight.shape[input_dim]
-            start_idx = int(original_size * cumulative_ratios[tp_rank] / total_ratio)
-            end_idx = int(original_size * cumulative_ratios[tp_rank + 1] / total_ratio)
-            actual_shard_size = end_idx - start_idx
-            
-            # 가중치 분배 확인 로그
-            print(f"✅[WEIGHT_DIST][rank {tp_rank}] RowParallel: "
-                  f"ratio {weight_ratios[tp_rank]}/{total_ratio}, "
-                  f"param unchanged, "
-                  f"weight {original_size}→{actual_shard_size} "
-                  f"({start_idx}:{end_idx})")
-            
-            loaded_weight = loaded_weight.narrow(input_dim, start_idx,
-                                                 actual_shard_size)
+            loaded_weight = loaded_weight.narrow(input_dim, start_idx, shard_size)
 
         # Special case for loading scales off disk, which often do not
         # have a shape (such as in the case of AutoFP8).
