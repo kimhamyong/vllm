@@ -228,7 +228,7 @@ class Attention(nn.Module):
                 
                 # Validation: if calculation fails, fall back to uniform distribution
                 if query_dim % self.head_size != 0:
-                    actual_num_heads = self.num_headsㅈ
+                    actual_num_heads = self.num_heads
                 
                 # For KV heads, calculate from key tensor if available
                 if key is not None:
@@ -291,7 +291,7 @@ class Attention(nn.Module):
         self._v_scale.copy_(torch.abs(value).max() / self.v_range)
         self._k_scale_float = self._k_scale.item()
         self._v_scale_float = self._v_scale.item()
-        # We only calculate the scales once
+        # We only calculate the scales 
         self.calculate_kv_scales = False
 
     def extra_repr(self) -> str:
