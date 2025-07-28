@@ -496,9 +496,31 @@ class RayDistributedExecutor(DistributedExecutorBase):
 
         # Get the results of the ray workers.
         if self.workers:
-            ray_worker_outputs = ray.get(ray_worker_outputs)
+            logger.info(f"[👌Ray] Waiting for {len(ray_worker_outputs)} worker outputs...")
+            logger.info(f"[👌Ray] Worker outputs object refs: {ray_worker_outputs}")
+            
+            # Add timeout and individual worker monitoring
+            import time
+            start_time = time.time()
+            try:
+                ray_worker_outputs = ray.get(ray_worker_outputs, timeout=300)  # 5 minute timeout
+                logger.info(f"[👌Ray] Got worker outputs: {ray_worker_outputs}")
+            except Exception as e:
+                elapsed = time.time() - start_time
+                logger.error(f"[👌Ray] Failed to get worker outputs after {elapsed:.2f}s: {e}")
+                
+                # Check individual worker status
+                for i, output_ref in enumerate(ray_worker_outputs):
+                    try:
+                        result = ray.get(output_ref, timeout=1)
+                        logger.info(f"[👌Ray] Worker {i} completed with result: {result}")
+                    except Exception as worker_error:
+                        logger.error(f"[👌Ray] Worker {i} failed or timed out: {worker_error}")
+                raise
 
-        return driver_worker_output + ray_worker_outputs
+        result = driver_worker_output + ray_worker_outputs
+        logger.info(f"[👌Ray] Returning combined result: {result}")
+        return result
 
     def _wait_for_tasks_completion(self, parallel_worker_tasks: Any) -> None:
         """Wait for futures returned from _run_workers() with

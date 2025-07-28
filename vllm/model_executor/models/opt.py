@@ -49,6 +49,7 @@ from .utils import (AutoWeightsLoader, WeightsMapper, is_pp_missing_parameter,
                     maybe_prefix)
 
 
+
 class OPTLearnedPositionalEmbedding(nn.Embedding):
 
     def __init__(self, num_embeddings: int, embedding_dim: int):
@@ -395,11 +396,23 @@ class OPTForCausalLM(nn.Module, SupportsPP):
 
     def compute_logits(
         self,
-        hidden_states: torch.Tensor,
-        sampling_metadata: SamplingMetadata,
+        hidden_states: torch.Tensor, # 모델의 각 레이어에서 출력되는 중간 결과로, 언어 모델의 예측을 위한 입력으로 사용
+        sampling_metadata: SamplingMetadata, # 샘플링 과정에 필요한 추가 정보를 담고 있는 객체
     ) -> Optional[torch.Tensor]:
+        from vllm.distributed import get_tensor_model_parallel_rank
+        from vllm.logger import init_logger
+        logger = init_logger(__name__)
+        
+        tp_rank = get_tensor_model_parallel_rank()
+        logger.info(f"[🍕LOGITS] TP Rank {tp_rank}: Starting compute_logits, hidden_states shape: {hidden_states.shape}")
+        logger.info(f"[🍕LOGITS] TP Rank {tp_rank}: lm_head type: {type(self.lm_head)}")
+        if hasattr(self.lm_head, 'weight'):
+            logger.info(f"[🍕LOGITS] TP Rank {tp_rank}: lm_head weight shape: {self.lm_head.weight.shape}")
+        
+        logger.info(f"[🍕LOGITS] TP Rank {tp_rank}: Calling logits_processor...")
         logits = self.logits_processor(self.lm_head, hidden_states,
                                        sampling_metadata)
+        logger.info(f"[🍕LOGITS] TP Rank {tp_rank}: logits_processor completed, logits shape: {logits.shape if logits is not None else None}")
         return logits
 
     def load_weights(self, weights: Iterable[tuple[str,

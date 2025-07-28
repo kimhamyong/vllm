@@ -135,20 +135,26 @@ class EngineCore:
         start = time.time()
 
         # Get all kv cache needed by the model
+        logger.info("[⚡ Engine Core Debug] About to get KV cache specs")
         kv_cache_specs = self.model_executor.get_kv_cache_specs()
+        logger.info(f"[⚡ Engine Core Debug] Got KV cache specs: {len(kv_cache_specs)} workers")
 
         # Profiles the peak memory usage of the model to determine how much
         # memory can be allocated for kv cache.
+        logger.info("[⚡ Engine Core Debug] About to determine available memory")
         available_gpu_memory = self.model_executor.determine_available_memory()
+        logger.info(f"[⚡ Engine Core Debug] Available GPU memory: {available_gpu_memory}")
 
         assert len(kv_cache_specs) == len(available_gpu_memory)
         # Get the kv cache tensor size
+        logger.info("[⚡ Engine Core Debug] About to create KV cache configs")
         kv_cache_configs = [
             get_kv_cache_config(vllm_config, kv_cache_spec_one_worker,
                                 available_gpu_memory_one_worker)
             for kv_cache_spec_one_worker, available_gpu_memory_one_worker in
             zip(kv_cache_specs, available_gpu_memory)
         ]
+        logger.info(f"[⚡ Engine Core Debug] Created {len(kv_cache_configs)} KV cache configs")
 
         # Since we use a shared centralized controller, we need the
         # `kv_cache_config` to be consistent across all workers to make sure

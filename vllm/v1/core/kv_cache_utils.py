@@ -700,28 +700,52 @@ def _get_kv_cache_config_uniform_type(vllm_config: VllmConfig,
     Returns:
         The generated KVCacheConfig
     """
+    logger.info(f"[👌KV Cache Debug] Starting _get_kv_cache_config_uniform_type")
+    logger.info(f"[👌KV Cache Debug] kv_cache_spec keys: {list(kv_cache_spec.keys())}")
+    logger.info(f"[👌KV Cache Debug] kv_cache_spec values: {list(kv_cache_spec.values())}")
+    logger.info(f"[👌KV Cache Debug] available_memory: {available_memory:,} bytes")
 
-    page_size = get_uniform_page_size(kv_cache_spec)
+    # For non-uniform distribution, use the maximum page size
+    page_sizes = set(layer.page_size_bytes for layer in kv_cache_spec.values())
+    if len(page_sizes) > 1:
+        logger.info(f"[👌KV Cache Debug] Non-uniform page sizes detected: {page_sizes}")
+        page_size = max(page_sizes)
+        logger.info(f"[👌KV Cache Debug] Using maximum page_size for allocation: {page_size}")
+    else:
+        page_size = page_sizes.pop()
+        logger.info(f"[👌KV Cache Debug] Uniform page_size: {page_size}")
+    
     num_blocks = get_num_blocks(vllm_config, len(kv_cache_spec),
                                 available_memory, page_size)
+    logger.info(f"[👌KV Cache Debug] calculated num_blocks: {num_blocks}")
 
     per_layer_size = page_size * num_blocks
+    logger.info(f"[👌KV Cache Debug] calculated per_layer_size: {per_layer_size}")
+    
     # All layers have the same KV cache spec, so we create one kv cache group
     # for all layers.
     grouped_layer_names = [list(kv_cache_spec.keys())]
+    logger.info(f"[👌KV Cache Debug] grouped_layer_names: {grouped_layer_names}")
 
     # Each layer uses a separate Tensor to store its KV cache.
+    logger.info(f"[👌KV Cache Debug] Creating KV cache tensors...")
     kv_cache_tensors = [
         KVCacheTensor(size=per_layer_size, shared_by=[layer_name])
         for layer_name in kv_cache_spec
     ]
+    logger.info(f"[👌KV Cache Debug] Created {len(kv_cache_tensors)} KV cache tensors")
 
+    logger.info(f"[👌KV Cache Debug] Creating KV cache groups...")
+    kv_cache_groups = create_kv_cache_group_specs(kv_cache_spec, grouped_layer_names)
+    logger.info(f"[👌KV Cache Debug] Created {len(kv_cache_groups)} KV cache groups")
+
+    logger.info(f"[👌KV Cache Debug] Creating KVCacheConfig...")
     kv_cache_config = KVCacheConfig(
         num_blocks=num_blocks,
         kv_cache_tensors=kv_cache_tensors,
-        kv_cache_groups=create_kv_cache_group_specs(kv_cache_spec,
-                                                    grouped_layer_names),
+        kv_cache_groups=kv_cache_groups,
     )
+    logger.info(f"[👌KV Cache Debug] KVCacheConfig created successfully")
 
     num_tokens = num_blocks * vllm_config.cache_config.block_size
     num_tokens_str = f"{num_tokens:,}"
@@ -993,12 +1017,65 @@ def unify_kv_cache_configs(kv_cache_configs: list[KVCacheConfig]):
         kv_cache_config.kv_cache_groups.sort(
             key=lambda x: x.kv_cache_spec.type_id)
 
-    # Verify that the groups of each rank are the same.
-    for kv_cache_config in kv_cache_configs[1:]:
-        for group_rank_0, group_rank_i in zip(
-                kv_cache_configs[0].kv_cache_groups,
-                kv_cache_config.kv_cache_groups):
-            assert group_rank_0.kv_cache_spec == group_rank_i.kv_cache_spec
+    # Verify that the groups of each rank are compatible and unify them to max size
+    # for non-uniform weight distribution support
+    for group_idx in range(len(kv_cache_configs[0].kv_cache_groups)):
+        # Collect all specs for this group across ranks
+        all_specs = [config.kv_cache_groups[group_idx].kv_cache_spec 
+                    for config in kv_cache_configs]
+        
+        # Verify compatibility (all attributes except num_kv_heads must match)
+        base_spec = all_specs[0]
+        for spec in all_specs[1:]:
+            assert spec.block_size == base_spec.block_size, \
+                f"Block size mismatch: {spec.block_size} vs {base_spec.block_size}"
+            assert spec.head_size == base_spec.head_size, \
+                f"Head size mismatch: {spec.head_size} vs {base_spec.head_size}"
+            assert spec.dtype == base_spec.dtype, \
+                f"Dtype mismatch: {spec.dtype} vs {base_spec.dtype}"
+            
+            # For non-uniform distribution, type_id may differ due to vocab size
+            # Extract attention type (e.g., "full_attention" from "full_attention_16_49152")  
+            base_type_parts = base_spec.type_id.split('_')
+            spec_type_parts = spec.type_id.split('_')
+            
+            # Compare attention type (first two parts: "full_attention")
+            if len(base_type_parts) >= 2 and len(spec_type_parts) >= 2:
+                base_attention_type = '_'.join(base_type_parts[:2])
+                spec_attention_type = '_'.join(spec_type_parts[:2])
+                assert base_attention_type == spec_attention_type, \
+                    f"Attention type mismatch: {base_attention_type} vs {spec_attention_type}"
+            else:
+                # Fallback to full type_id comparison if parsing fails
+                assert base_spec.type_id == spec.type_id, \
+                    f"Type ID mismatch: {spec.type_id} vs {base_spec.type_id}"
+        
+        # For non-uniform distribution, we allow different num_kv_heads
+        # but ensure memory allocation is based on the maximum size
+        kv_heads_list = [spec.num_kv_heads for spec in all_specs]
+        unique_kv_heads = set(kv_heads_list)
+        
+        if len(unique_kv_heads) > 1:
+            max_kv_heads = max(kv_heads_list)
+            logger.info(f"[🔥KV Cache Unify] Group {group_idx}: Found different num_kv_heads: {kv_heads_list}")
+            logger.info(f"[🔥KV Cache Unify] Max num_kv_heads: {max_kv_heads}")
+            logger.info(f"[🔥KV Cache Unify] Each rank keeps its original num_kv_heads for attention computation")
+            
+            # Calculate the maximum page size to ensure uniform memory allocation
+            max_page_size = max(spec.page_size_bytes for spec in all_specs)
+            
+            # Store this info for later use in memory allocation
+            for config_idx, config in enumerate(kv_cache_configs):
+                spec = config.kv_cache_groups[group_idx].kv_cache_spec
+                if hasattr(spec, '_max_page_size_for_allocation'):
+                    # If spec supports storing max page size
+                    spec._max_page_size_for_allocation = max_page_size
+                else:
+                    # Log warning - memory allocation might need adjustment
+                    logger.warning(
+                        f"[🔥KV Cache Unify] Rank {config_idx}: Cannot store max_page_size. "
+                        f"Memory allocation may need manual adjustment."
+                    )
 
     # Change the num_blocks of each rank to the smallest among all ranks. We
     # do not need to shrink the tensor size because it is valid to only use the

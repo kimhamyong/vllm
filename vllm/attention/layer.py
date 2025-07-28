@@ -108,6 +108,7 @@ class Attention(nn.Module):
         self.head_size = head_size
         self.num_kv_heads = num_kv_heads
         self.sliding_window = sliding_window
+        
 
         quant_method = quant_config.get_quant_method(
             self, prefix=prefix) if quant_config else None
@@ -179,6 +180,8 @@ class Attention(nn.Module):
         self.k_range = torch.tensor(envs.K_SCALE_CONSTANT, dtype=torch.float32)
         self.v_range = torch.tensor(envs.V_SCALE_CONSTANT, dtype=torch.float32)
 
+    # 주어진 입력(query, key, value)로부터 attention을 수행하는 메소드
+    # KV 캐시를 사용하여 입력 텐서에 대한 attention을 계산하고 결과를 출력 텐서로 반환
     def forward(
         self,
         query: torch.Tensor,
@@ -198,12 +201,13 @@ class Attention(nn.Module):
         context using
         `vllm.forward_context.get_forward_context().attn_metadata`.
         """
-        if self.calculate_kv_scales:
+        if self.calculate_kv_scales: # kv_scale은 각 텐서의 스케일링 계수를 계산하여 어텐션 결과에 반영하는 데 사용
             attn_metadata = get_forward_context().attn_metadata
             if attn_metadata.enable_kv_scales_calculation:
                 self.calc_kv_scales(query, key, value)
-        if self.use_output:
-            output_shape = (output_shape
+        
+        if self.use_output: # output_shape가 주어지면 그 형태로 출력을 맞춤
+            output_shape = (output_shape # 아니면 query 형태로
                             if output_shape is not None else query.shape)
             output = torch.zeros(output_shape,
                                  dtype=query.dtype,
@@ -216,18 +220,39 @@ class Attention(nn.Module):
                 # Reshape the query, key, and value tensors.
                 # NOTE(woosuk): We do this outside the custom op to minimize the
                 # CPU overheads from the non-CUDA-graph regions.
-                query = query.view(-1, self.num_heads, self.head_size)
-                output = output.view(-1, self.num_heads, self.head_size)
+                
+                # Calculate actual head counts directly from tensor dimensions
+                # This is the most reliable approach for weight distribution ratios
+                query_dim = query.shape[-1]
+                actual_num_heads = query_dim // self.head_size
+                
+                # Validation: if calculation fails, fall back to uniform distribution
+                if query_dim % self.head_size != 0:
+                    actual_num_heads = self.num_headsㅈ
+                
+                # For KV heads, calculate from key tensor if available
                 if key is not None:
-                    key = key.view(-1, self.num_kv_heads, self.head_size)
+                    key_dim = key.shape[-1]
+                    actual_num_kv_heads = key_dim // self.head_size
+                    if key_dim % self.head_size != 0:
+                        actual_num_kv_heads = self.num_kv_heads
+                else:
+                    actual_num_kv_heads = self.num_kv_heads
+
+                # Reshape the query, key, and value tensors using actual head counts
+                query = query.view(-1, actual_num_heads, self.head_size)
+                output = output.view(-1, actual_num_heads, self.head_size)
+                if key is not None:
+                    key = key.view(-1, actual_num_kv_heads, self.head_size)
                 if value is not None:
-                    value = value.view(-1, self.num_kv_heads, self.head_size)
+                    value = value.view(-1, actual_num_kv_heads, self.head_size)
             if self.use_direct_call:
                 forward_context: ForwardContext = get_forward_context()
                 attn_metadata = forward_context.attn_metadata
                 if isinstance(attn_metadata, dict):
                     attn_metadata = attn_metadata[self.layer_name]
                 self_kv_cache = self.kv_cache[forward_context.virtual_engine]
+                # 어텐션 연산
                 self.impl.forward(self,
                                   query,
                                   key,
@@ -236,6 +261,7 @@ class Attention(nn.Module):
                                   attn_metadata,
                                   output=output)
             else:
+                # query, key, value 텐서를 처리하고 결과를 output 텐서에 저장
                 torch.ops.vllm.unified_attention_with_output(
                     query, key, value, output, self.layer_name)
             return output.view(-1, hidden_size)
@@ -244,8 +270,15 @@ class Attention(nn.Module):
                 forward_context = get_forward_context()
                 attn_metadata = forward_context.attn_metadata
                 if isinstance(attn_metadata, dict):
+                    # 어텐션 연산에 대한 설정 값
                     attn_metadata = attn_metadata[self.layer_name]
+                # kv_cache는 어텐션 계산에서 이전의 키와 값 텐서를 저장해 두고, 이를 재사용하여 연산을 최적화하는 데 사용
                 self_kv_cache = self.kv_cache[forward_context.virtual_engine]
+                # forward_context: 현재 실행되는 연산의 컨텍스트
+                # virtual_engine: 현재 연산이 수행되는 가상 엔진
+
+                # 현재 실행 중인 가상 엔진에 해당하는 kv_cache를 가져와서 self_kv_cache에 할당
+                # gpu 노드는 실행되는 작업에 맞는 kv_cache를 동적으로 할당
                 return self.impl.forward(self, query, key, value,
                                          self_kv_cache, attn_metadata)
             else:

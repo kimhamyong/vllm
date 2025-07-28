@@ -116,6 +116,40 @@ class DeviceCommunicatorBase:
         if dim < 0:
             # Convert negative dim to positive.
             dim += input_.dim()
+        
+        # Check if all ranks have the same size along the gather dimension
+        if self.world_size > 1:
+            local_size = torch.tensor([input_.shape[dim]], 
+                                    dtype=torch.long, 
+                                    device=input_.device)
+            size_list = [torch.zeros_like(local_size) 
+                        for _ in range(self.world_size)]
+            dist.all_gather(size_list, local_size, group=self.device_group)
+            sizes = [int(s.item()) for s in size_list]
+            
+            # If sizes are different, use list-based all_gather
+            if len(set(sizes)) > 1:
+                # Variable size detected - use list-based all_gather
+                tensor_list = []
+                for i, size in enumerate(sizes):
+                    shape = list(input_.shape)
+                    shape[dim] = size
+                    if i == self.rank_in_group:
+                        # For current rank, use the actual input tensor
+                        tensor_list.append(input_)
+                    else:
+                        # For other ranks, allocate empty tensor
+                        tensor_list.append(torch.empty(shape, 
+                                                     dtype=input_.dtype, 
+                                                     device=input_.device))
+                
+                # All-gather tensors from all ranks
+                dist.all_gather(tensor_list, input_, group=self.device_group)
+                
+                # Concatenate along the specified dimension
+                return torch.cat(tensor_list, dim=dim)
+        
+        # Uniform size path - use existing optimized implementation
         input_size = input_.size()
         # NOTE: we have to use concat-style all-gather here,
         # stack-style all-gather has compatibility issues with

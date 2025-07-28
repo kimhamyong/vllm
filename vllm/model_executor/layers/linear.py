@@ -515,9 +515,6 @@ class ColumnParallelLinear(LinearBase):
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
         tp_rank = get_tensor_model_parallel_rank()
-
-        print(f"✅[weight_loader] TP rank: {tp_rank}, param shape: {param.shape}, loaded weight shape: {loaded_weight.shape}")
-
         output_dim = getattr(param, "output_dim", None)
 
         #이 파라미터가 TP로 쪼개진 weight인지 여부를 판단

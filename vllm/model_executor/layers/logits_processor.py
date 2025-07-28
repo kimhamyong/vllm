@@ -88,16 +88,30 @@ class LogitsProcessor(nn.Module):
 
     def _gather_logits(self, logits: torch.Tensor) -> torch.Tensor:
         """gather/all-gather the logits tensor across model parallel group."""
+        from vllm.distributed import get_tensor_model_parallel_rank
+        from vllm.logger import init_logger
+        
+        logger = init_logger(__name__)
+        tp_rank = get_tensor_model_parallel_rank()
+        
+        logger.info(f"[🔥GATHER] TP Rank {tp_rank}: Starting _gather_logits, input logits shape: {logits.shape}")
+        
         if self.use_all_gather:
             # Gather is not supported for some devices such as TPUs.
             # Use all-gather instead.
             # NOTE(woosuk): Here, the outputs of every device should not be None
             # because XLA requires strict SPMD among all devices. Every device
             # should execute the same operations after gathering the logits.
+            logger.info(f"[🔥GATHER] TP Rank {tp_rank}: Using all_gather")
             logits = tensor_model_parallel_all_gather(logits)
+            logger.info(f"[🔥GATHER] TP Rank {tp_rank}: all_gather completed, shape: {logits.shape}")
         else:
+            logger.info(f"[🔥GATHER] TP Rank {tp_rank}: Using standard gather")
             # None may be returned for rank > 0
             logits = tensor_model_parallel_gather(logits)
+            logger.info(f"[🔥GATHER] TP Rank {tp_rank}: gather completed, shape: {logits.shape if logits is not None else None}")
+                
+        logger.info(f"[🔥GATHER] TP Rank {tp_rank}: Final logits shape: {logits.shape if logits is not None else None}")
         return logits
 
     def _get_logits(

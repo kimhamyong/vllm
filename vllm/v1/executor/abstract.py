@@ -73,7 +73,22 @@ class Executor(ExecutorBase):
         pass
 
     def determine_available_memory(self) -> list[int]:  # in bytes
-        output = self.collective_rpc("determine_available_memory")
+        from vllm.logger import init_logger
+        logger = init_logger(__name__)
+        
+        logger.info("[💫 Executor Debug] Starting determine_available_memory - calling collective_rpc")
+
+        def call_stack_string(): 
+            """get the current call stack for debugging purposes."""
+            import traceback
+            return f"Call Stack:\n" + ''.join(traceback.format_stack())
+        
+        #print(f"[💫💫💫 Executor Debug] {call_stack_string()}")
+        
+        output = self.collective_rpc("determine_available_memory")        
+        
+        logger.info(f"[💫 Executor Debug] collective_rpc completed, output: {output}")
+        
         return output
 
     def get_kv_cache_specs(self) -> list[dict[str, KVCacheSpec]]:
@@ -105,9 +120,17 @@ class ExecutorWithExternalLauncher(ExecutorWithExternalLauncherV0, Executor):
     def determine_available_memory(self) -> list[int]:  # in bytes
         # same as determine_num_available_blocks in v0,
         # we need to get the min across all ranks.
+        from vllm.logger import init_logger
+        logger = init_logger(__name__)
+        
         memory = super().determine_available_memory()
+        
         from vllm.distributed.parallel_state import get_world_group
         cpu_group = get_world_group().cpu_group
+        
         memory_tensor = torch.tensor([memory], device="cpu", dtype=torch.int64)
+        
         dist.all_reduce(memory_tensor, group=cpu_group, op=dist.ReduceOp.MIN)
-        return [memory_tensor.item()]
+        
+        result = [memory_tensor.item()]
+        return result

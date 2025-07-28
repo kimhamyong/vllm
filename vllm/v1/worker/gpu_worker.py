@@ -215,11 +215,24 @@ class Worker(WorkerBase):
 
         # Execute a forward pass with dummy inputs to profile the memory usage
         # of the model.
+        logger.info("Starting memory profiling...")
+        logger.info("Model memory usage: %.4f GiB", 
+                    self.model_runner.model_memory_usage / GiB_bytes)
+        logger.info("Initial snapshot free memory: %.4f GiB",
+                    self.init_snapshot.free_memory / GiB_bytes)
+        
+        # Add worker rank information for debugging
+        from vllm.distributed import get_tensor_model_parallel_rank
+        tp_rank = get_tensor_model_parallel_rank()
+        logger.info(f"[🔥WORKER] TP Rank {tp_rank}: Starting memory profiling")
+        
         with memory_profiling(
                 self.init_snapshot,
                 weights_memory=int(
                     self.model_runner.model_memory_usage)) as profile_result:
+            logger.info(f"[🔥WORKER] TP Rank {tp_rank}: Executing profile_run...")
             self.model_runner.profile_run()
+            logger.info(f"[🔥WORKER] TP Rank {tp_rank}: profile_run completed successfully")
 
         free_gpu_memory = profile_result.after_profile.free_memory
         # NOTE(woosuk): Here we assume that the other processes using the same
@@ -245,24 +258,35 @@ class Worker(WorkerBase):
                     GiB(available_kv_cache_memory))
         gc.collect()
 
-        return int(available_kv_cache_memory)
+        result = int(available_kv_cache_memory)
+        logger.info(f"[GPU Worker] determine_available_memory returning: {result} bytes (%.2f GiB)", 
+                    GiB(result))
+        return result
+
 
     def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
         return self.model_runner.get_kv_cache_spec()
 
     def initialize_from_config(self, kv_cache_config: KVCacheConfig) -> None:
         """Allocate GPU KV cache with the specified kv_cache_config."""
+        logger.info("[🔍 GPU Worker Debug] Starting initialize_from_config")
+        logger.info(f"[🔍 GPU Worker Debug] kv_cache_config: {kv_cache_config}")
 
         if self.vllm_config.model_config.enable_sleep_mode:
+            logger.info("[🔍 GPU Worker Debug] Sleep mode enabled, using CuMemAllocator")
             from vllm.device_allocator.cumem import CuMemAllocator
 
             allocator = CuMemAllocator.get_instance()
             context = allocator.use_memory_pool(tag="kv_cache")
         else:
+            logger.info("[🔍 GPU Worker Debug] Sleep mode disabled, using nullcontext")
             from contextlib import nullcontext
             context = nullcontext()
+        
+        logger.info("[🔍 GPU Worker Debug] About to call model_runner.initialize_kv_cache")
         with context:
             self.model_runner.initialize_kv_cache(kv_cache_config)
+        logger.info("[🔍 GPU Worker Debug] initialize_kv_cache completed")
 
     def compile_or_warm_up_model(self) -> None:
         # warm up sizes that are not in cudagraph capture sizes,

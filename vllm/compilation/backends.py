@@ -207,6 +207,7 @@ class CompilerManager:
                     handle)
 
         # after compiling the last graph, record the end time
+        logger.info(f"graph_index: {graph_index}, num_graphs: {num_graphs}")
         if graph_index == num_graphs - 1:
             now = time.time()
             elapsed = now - compilation_start_time

@@ -31,6 +31,7 @@ from vllm.forward_context import (DPMetadata, get_forward_context,
                                   set_forward_context)
 from vllm.logger import init_logger
 from vllm.model_executor.layers.mamba.mamba_mixer2 import MambaBase
+from vllm.model_executor.layers.linear import get_weight_distribution_ratios
 from vllm.model_executor.layers.rotary_embedding import MRotaryEmbedding
 from vllm.model_executor.model_loader import TensorizerLoader, get_model_loader
 from vllm.model_executor.models.interfaces import (has_step_pooler,
@@ -1770,6 +1771,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     self.model.get_eagle3_aux_hidden_state_layers())
             time_after_load = time.perf_counter()
         self.model_memory_usage = m.consumed_memory
+        logger.info("Model memory usage set to: %d bytes (%.4f GiB)",
+                    self.model_memory_usage, self.model_memory_usage / GiB_bytes)
         logger.info("Model loading took %.4f GiB and %.6f seconds",
                     self.model_memory_usage / GiB_bytes,
                     time_after_load - time_before_load)
@@ -2060,13 +2063,20 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
+        from vllm.distributed import get_tensor_model_parallel_rank
+        tp_rank = get_tensor_model_parallel_rank()
+        logger.info(f"[🔥SAMPLER] TP Rank {tp_rank}: Starting _dummy_sampler_run, hidden_states shape: {hidden_states.shape}")
+        
         # The dummy hidden states may contain special values,
         # like `inf` or `nan`.
         # To avoid breaking the sampler, we use a random tensor here instead.
         hidden_states = torch.rand_like(hidden_states)
+        logger.info(f"[🔥SAMPLER] TP Rank {tp_rank}: Created random hidden_states")
 
+        logger.info(f"[🔥SAMPLER] TP Rank {tp_rank}: Computing logits...")
         logits = self.model.compute_logits(hidden_states, None)
         num_reqs = logits.size(0)
+        logger.info(f"[🔥SAMPLER] TP Rank {tp_rank}: Computed logits, shape: {logits.shape}, num_reqs: {num_reqs}")
 
         dummy_tensors = lambda v: torch.full(
             (num_reqs, ), v, device=self.device)
@@ -2089,9 +2099,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             bad_words_token_ids={},
             logitsprocs=LogitsProcessorManager(),
         )
+        logger.info(f"[🔥SAMPLER] TP Rank {tp_rank}: Running sampler...")
         try:
             sampler_output = self.sampler(logits=logits,
                                           sampling_metadata=dummy_metadata)
+            logger.info(f"[🔥SAMPLER] TP Rank {tp_rank}: Sampler completed successfully")
         except RuntimeError as e:
             if 'out of memory' in str(e):
                 raise RuntimeError(
@@ -2173,6 +2185,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         return pooler_output
 
     def profile_run(self) -> None:
+        logger.info("profile_run started - multimodal: %s, max_encoder_tokens: %d, encoder_cache_size: %d",
+                    self.is_multimodal_model, self.max_num_encoder_input_tokens, 
+                    self.encoder_cache_size)
         # Profile with multimodal encoder & encoder cache.
         # TODO: handle encoder-decoder models once we support them.
         if (self.is_multimodal_model and self.max_num_encoder_input_tokens > 0
@@ -2245,19 +2260,36 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             self.encoder_cache["tmp"] = dict(enumerate(dummy_encoder_outputs))
 
         # Add `is_profile` here to pre-allocate communication buffers
+        logger.info("Running dummy_run with max_num_tokens: %d", self.max_num_tokens)
         hidden_states, last_hidden_states \
             = self._dummy_run(self.max_num_tokens, is_profile=True)
+        logger.info("dummy_run completed, processing outputs...")
+        from vllm.distributed import get_tensor_model_parallel_rank
+        tp_rank = get_tensor_model_parallel_rank()
+        
         if get_pp_group().is_last_rank:
+            logger.info(f"[🔥WORKER] TP Rank {tp_rank}: Processing last rank outputs, is_pooling_model: {self.is_pooling_model}")
             if self.is_pooling_model:
+                logger.info(f"[🔥WORKER] TP Rank {tp_rank}: Running _dummy_pooler_run")
                 output = self._dummy_pooler_run(hidden_states)
+                logger.info(f"[🔥WORKER] TP Rank {tp_rank}: _dummy_pooler_run completed")
             else:
+                logger.info(f"[🔥WORKER] TP Rank {tp_rank}: Running _dummy_sampler_run")
                 output = self._dummy_sampler_run(last_hidden_states)
+                logger.info(f"[🔥WORKER] TP Rank {tp_rank}: _dummy_sampler_run completed")
         else:
+            logger.info(f"[🔥WORKER] TP Rank {tp_rank}: Not last rank, skipping output processing")
             output = None
+        
+        logger.info(f"[🔥WORKER] TP Rank {tp_rank}: Syncing device...")
         self._sync_device()
+        logger.info(f"[🔥WORKER] TP Rank {tp_rank}: Device sync completed, cleaning up...")
         del hidden_states, output
+        logger.info(f"[🔥WORKER] TP Rank {tp_rank}: Clearing encoder cache...")
         self.encoder_cache.clear()
+        logger.info(f"[🔥WORKER] TP Rank {tp_rank}: Running garbage collection...")
         gc.collect()
+        logger.info(f"[🔥WORKER] TP Rank {tp_rank}: profile_run completed")
 
     def capture_model(self) -> None:
         if not self.use_cuda_graph:
@@ -2436,9 +2468,21 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             kv_cache_spec = kv_cache_group_spec.kv_cache_spec
             for layer_name in kv_cache_group_spec.layer_names:
                 raw_tensor = kv_cache_raw_tensors[layer_name]
-                assert raw_tensor.numel() % kv_cache_spec.page_size_bytes == 0
-                num_blocks = (raw_tensor.numel() //
-                              kv_cache_spec.page_size_bytes)
+                
+                # For non-uniform distribution, the tensor size might not perfectly
+                # match the unified page_size_bytes due to num_kv_heads adjustment
+                if raw_tensor.numel() % kv_cache_spec.page_size_bytes != 0:
+                    logger.warning(
+                        f"[🔥KV Cache] Layer {layer_name}: tensor size {raw_tensor.numel()} "
+                        f"not divisible by page_size_bytes {kv_cache_spec.page_size_bytes}. "
+                        f"This is expected for non-uniform weight distribution. "
+                        f"Using floor division to calculate num_blocks."
+                    )
+                    # Use the available tensor size, might waste some memory
+                    num_blocks = raw_tensor.numel() // kv_cache_spec.page_size_bytes
+                else:
+                    num_blocks = (raw_tensor.numel() //
+                                  kv_cache_spec.page_size_bytes)
                 if isinstance(kv_cache_spec, AttentionSpec):
                     has_attn = True
                     kv_cache_shape = self.attn_backends[i].get_kv_cache_shape(
@@ -2465,9 +2509,22 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                         kv_cache_stride_order.index(i)
                         for i in range(len(kv_cache_stride_order))
                     ]
-                    kv_caches[layer_name] = kv_cache_raw_tensors[
-                        layer_name].view(dtype).view(kv_cache_shape).permute(
-                            *inv_order)
+                    # Calculate the actual size we can use
+                    actual_size = num_blocks * kv_cache_spec.page_size_bytes
+                    if actual_size < raw_tensor.numel():
+                        # Use only the part of tensor that matches our calculated blocks
+                        logger.warning(
+                            f"[🔥KV Cache] Layer {layer_name}: Using {actual_size} bytes "
+                            f"out of {raw_tensor.numel()} available bytes"
+                        )
+                        # Create a view of only the usable portion
+                        usable_tensor = raw_tensor.flatten()[:actual_size]
+                        kv_caches[layer_name] = usable_tensor.view(
+                            dtype).view(kv_cache_shape).permute(*inv_order)
+                    else:
+                        kv_caches[layer_name] = kv_cache_raw_tensors[
+                            layer_name].view(dtype).view(kv_cache_shape).permute(
+                                *inv_order)
                 elif isinstance(kv_cache_spec, MambaSpec):
                     has_mamba = True
                     raw_tensor = kv_cache_raw_tensors[layer_name]
@@ -2568,19 +2625,35 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             kv_cache_config: Configuration for the KV cache, including the KV
             cache size of each layer
         """
+        logger.info("[🚀 Model Runner Debug] Starting initialize_kv_cache")
+        
         self.kv_cache_config = kv_cache_config
+        logger.info("[🚀 Model Runner Debug] Set kv_cache_config")
+        
         self.may_reinitialize_input_batch(kv_cache_config)
+        logger.info("[🚀 Model Runner Debug] Completed may_reinitialize_input_batch")
+        
         self.initialize_attn_backend(kv_cache_config)
+        logger.info("[🚀 Model Runner Debug] Completed initialize_attn_backend")
+        
+        logger.info("[🚀 Model Runner Debug] About to call initialize_kv_cache_tensors")
         kv_caches = self.initialize_kv_cache_tensors(kv_cache_config)
+        logger.info("[🚀 Model Runner Debug] Completed initialize_kv_cache_tensors")
 
         if self.speculative_config and self.speculative_config.use_eagle():
+            logger.info("[🚀 Model Runner Debug] Processing Eagle speculative config")
             assert isinstance(self.drafter, EagleProposer)
             # validate all draft model layers belong to the same kv cache
             # group
             self.drafter.validate_same_kv_cache_group(kv_cache_config)
+            logger.info("[🚀 Model Runner Debug] Completed Eagle validation")
 
         if has_kv_transfer_group():
+            logger.info("[🚀 Model Runner Debug] Registering KV caches for transfer")
             get_kv_transfer_group().register_kv_caches(kv_caches)
+            logger.info("[🚀 Model Runner Debug] Completed KV cache registration")
+        
+        logger.info("[🚀 Model Runner Debug] initialize_kv_cache completed successfully")
 
     def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
         """
@@ -2610,10 +2683,32 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
             # TODO: Support other attention modules, e.g., cross-attention
             if attn_module.attn_type == AttentionType.DECODER:
+                # Calculate actual KV heads based on weight distribution ratios
+                tp_size = self.vllm_config.parallel_config.tensor_parallel_size
+                tp_rank = self.vllm_config.parallel_config.rank
+                
+                # Get weight distribution ratios from environment variable
+                ratios = get_weight_distribution_ratios(tp_size)
+                total_ratio = sum(ratios)
+                current_ratio = ratios[tp_rank]
+                
+                # Reconstruct total KV heads from current distributed value
+                # attn_module.num_kv_heads is already after uniform TP distribution
+                # So total = current * tp_size
+                total_kv_heads = attn_module.num_kv_heads * tp_size
+                
+                # Calculate this rank's actual KV heads based on ratio
+                actual_num_kv_heads = (total_kv_heads * current_ratio) // total_ratio
+
+                print(f"[✴️✴️✴️KVCacheSpec Debug] Layer: {layer_name}, TP Rank: {tp_rank}, "
+                    f"Total KV Heads: {total_kv_heads}, Current Ratio: {current_ratio}, "
+                    f"Assigned KV Heads: {actual_num_kv_heads}, "
+                    f"Original (after TP): {attn_module.num_kv_heads}")
+                
                 if attn_module.sliding_window is not None:
                     kv_cache_spec[layer_name] = SlidingWindowSpec(
                         block_size=block_size,
-                        num_kv_heads=attn_module.num_kv_heads,
+                        num_kv_heads=actual_num_kv_heads,
                         head_size=attn_module.head_size,
                         dtype=self.kv_cache_dtype,
                         sliding_window=attn_module.sliding_window,
@@ -2621,7 +2716,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 else:
                     kv_cache_spec[layer_name] = FullAttentionSpec(
                         block_size=block_size,
-                        num_kv_heads=attn_module.num_kv_heads,
+                        num_kv_heads=actual_num_kv_heads,
                         head_size=attn_module.head_size,
                         dtype=self.kv_cache_dtype,
                         use_mla=use_mla)
