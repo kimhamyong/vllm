@@ -664,7 +664,9 @@ def get_num_blocks(vllm_config: VllmConfig, num_layers: int,
         available_memory: Memory available for KV cache in bytes.
         page_size: The page size of the KV cache.
     """
-    num_blocks = int(available_memory // page_size // num_layers)
+
+    # #GPU KV blocks = remaining memory / block byte size
+    num_blocks = int(available_memory // page_size // num_layers) # 각 레이어가 사용할 블럭 개수
     num_blocks = max(num_blocks, 0)
     if vllm_config.cache_config.num_gpu_blocks_override is not None:
         num_gpu_blocks_override = \
@@ -803,25 +805,37 @@ def _get_kv_cache_config_uniform_page_size(
     there are 3 kv_cache_groups, each of which represents 10 layers.
 
     To simplify the implementation, we make the following assumptions:
+
+
     1. Physical memory per block: Must be the same across all KV cache groups. 
     Breaking this assumption is non-trivial due to memory fragmentation concerns
     when allocating blocks of different sizes.
+
+
     2. Tokens per block (block_size): Currently, we directly use 
     `CacheConfig.block_size` for all layers. It can be extended to vary by KV 
     cache group, but within each KV cache group, all layers must share the same 
     block size.
+
+
     3. Physical memory per token per layer: This property is decided by model 
     config. Currently we only support models that have the same physical memory 
     per token per layer for all layers. Can be relaxed with a simple extension, 
     but still need to keep physical memory per block the same for all groups.
+
+
     4. Number of layers per group: Currently assumed the same for all layers. 
     Can be relaxed with a simple extension, but still need to keep physical 
     memory per block the same for all groups.
+
+
     5. Attention type within groups: All layers in a group must share the same
     attention type. One exception is that, when 
     `--disable-hybrid-kv-cache-manager` is true, the single group for full 
     attention layers may also include attention layers using sliding window or 
     LLaMA 4 local attention. See `unify_hybrid_kv_cache_specs` for more details.
+
+    
     6. Support for multiple attention types: The design for most components is 
     general to an arbitrary number of attention types. But 
     `find_longest_cache_hit` only supports one attention type or two 
