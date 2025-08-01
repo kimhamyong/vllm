@@ -462,6 +462,7 @@ class ColumnParallelLinear(LinearBase):
             self.output_size_per_partition = int(output_size * weight_ratios[tp_rank] / total_ratio)
         
         self.output_partition_sizes = [self.output_size_per_partition]
+        
         # If QKV or MergedColumn, use output size of each partition.
         if hasattr(self, "output_sizes"):
             if len(weight_ratios) > 1 and any(r != weight_ratios[0] for r in weight_ratios):
@@ -545,6 +546,7 @@ class ColumnParallelLinear(LinearBase):
             
             # 환경변수에서 가중치 분배 비율 가져오기
             tp_size = get_tensor_model_parallel_world_size()
+            tp_rank = get_tensor_model_parallel_rank()
             weight_ratios = get_weight_distribution_ratios(tp_size)
             
             if len(set(weight_ratios)) == 1:
@@ -566,7 +568,10 @@ class ColumnParallelLinear(LinearBase):
         if len(loaded_weight.shape) == 0:
             loaded_weight = loaded_weight.reshape(1)
 
+
         print(f"🔍[COL_SHAPE_DEBUG] param_data.shape: {param_data.shape}, loaded_weight.shape: {loaded_weight.shape}")
+        
+        
         if param_data.shape != loaded_weight.shape:
             print(f"❌[COL_SHAPE_MISMATCH] Rank {get_tensor_model_parallel_rank()}: param {param_data.shape} != weight {loaded_weight.shape}")
             print(f"❌ Will try to resize loaded_weight to match param_data")
@@ -1224,7 +1229,10 @@ class QKVParallelLinear(ColumnParallelLinear):
                                 self.num_kv_heads) * self.head_size
                 shard_size = self.num_kv_heads * self.head_size
             
-            print(f"🔍[QKV_OFFSET_DEBUG] Rank {tp_rank}, {loaded_shard_id}: offset={shard_offset}, size={shard_size}, param_dim={param.data.shape[output_dim]}")
+
+            # print(f"🔍[QKV_OFFSET_DEBUG] Rank {tp_rank}, {loaded_shard_id}: offset={shard_offset}, size={shard_size}, param_dim={param.data.shape[output_dim]}")
+            
+            
             # Special case for Quantized Weights.
             # If quantized, we need to adjust the offset and size to account
             # for the packing.
@@ -1310,7 +1318,10 @@ class QKVParallelLinear(ColumnParallelLinear):
                     "QKVParallelLinear, assume the weight is the same "
                     "for all partitions.")
 
+
         print(f"🔍[QKV_SHAPE_DEBUG] param_data.shape: {param_data.shape}, loaded_weight.shape: {loaded_weight.shape}")
+
+
         if param_data.shape != loaded_weight.shape:
             print(f"❌[QKV_SHAPE_MISMATCH] Rank {get_tensor_model_parallel_rank()}: param {param_data.shape} != weight {loaded_weight.shape}")
             print(f"❌ Will try to resize loaded_weight to match param_data")
@@ -1477,7 +1488,10 @@ class RowParallelLinear(LinearBase):
         if len(loaded_weight.shape) == 0:
             loaded_weight = loaded_weight.reshape(1)
 
+
         print(f"🔍[ROW_SHAPE_DEBUG] param_data.shape: {param_data.shape}, loaded_weight.shape: {loaded_weight.shape}")
+
+
         if param_data.shape != loaded_weight.shape:
             print(f"❌[ROW_SHAPE_MISMATCH] Rank {tp_rank}: param {param_data.shape} != weight {loaded_weight.shape}")
             print(f"❌ Will try to resize loaded_weight to match param_data")
@@ -1525,9 +1539,6 @@ class RowParallelLinear(LinearBase):
             input_size = input_.shape[-1]
             start_idx = int(input_size * cumulative_ratios[tp_rank] / total_ratio)
             end_idx = int(input_size * cumulative_ratios[tp_rank + 1] / total_ratio)
-            actual_input_size = end_idx - start_idx
-            
-            print(f"🔍[RowParallel Forward] rank {tp_rank}: input {input_size}→{actual_input_size} ({start_idx}:{end_idx})")
             
             # 입력을 비율에 맞게 슬라이싱
             input_parallel = input_[..., start_idx:end_idx].contiguous()

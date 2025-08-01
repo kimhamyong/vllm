@@ -2063,20 +2063,13 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        from vllm.distributed import get_tensor_model_parallel_rank
-        tp_rank = get_tensor_model_parallel_rank()
-        logger.info(f"[🔥SAMPLER] TP Rank {tp_rank}: Starting _dummy_sampler_run, hidden_states shape: {hidden_states.shape}")
-        
         # The dummy hidden states may contain special values,
         # like `inf` or `nan`.
         # To avoid breaking the sampler, we use a random tensor here instead.
         hidden_states = torch.rand_like(hidden_states)
-        logger.info(f"[🔥SAMPLER] TP Rank {tp_rank}: Created random hidden_states")
 
-        logger.info(f"[🔥SAMPLER] TP Rank {tp_rank}: Computing logits...")
         logits = self.model.compute_logits(hidden_states, None)
         num_reqs = logits.size(0)
-        logger.info(f"[🔥SAMPLER] TP Rank {tp_rank}: Computed logits, shape: {logits.shape}, num_reqs: {num_reqs}")
 
         dummy_tensors = lambda v: torch.full(
             (num_reqs, ), v, device=self.device)
@@ -2099,11 +2092,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             bad_words_token_ids={},
             logitsprocs=LogitsProcessorManager(),
         )
-        logger.info(f"[🔥SAMPLER] TP Rank {tp_rank}: Running sampler...")
         try:
             sampler_output = self.sampler(logits=logits,
                                           sampling_metadata=dummy_metadata)
-            logger.info(f"[🔥SAMPLER] TP Rank {tp_rank}: Sampler completed successfully")
         except RuntimeError as e:
             if 'out of memory' in str(e):
                 raise RuntimeError(
@@ -2185,9 +2176,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         return pooler_output
 
     def profile_run(self) -> None:
-        logger.info("profile_run started - multimodal: %s, max_encoder_tokens: %d, encoder_cache_size: %d",
-                    self.is_multimodal_model, self.max_num_encoder_input_tokens, 
-                    self.encoder_cache_size)
         # Profile with multimodal encoder & encoder cache.
         # TODO: handle encoder-decoder models once we support them.
         if (self.is_multimodal_model and self.max_num_encoder_input_tokens > 0
@@ -2260,36 +2248,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             self.encoder_cache["tmp"] = dict(enumerate(dummy_encoder_outputs))
 
         # Add `is_profile` here to pre-allocate communication buffers
-        logger.info("Running dummy_run with max_num_tokens: %d", self.max_num_tokens)
         hidden_states, last_hidden_states \
             = self._dummy_run(self.max_num_tokens, is_profile=True)
-        logger.info("dummy_run completed, processing outputs...")
-        from vllm.distributed import get_tensor_model_parallel_rank
-        tp_rank = get_tensor_model_parallel_rank()
-        
         if get_pp_group().is_last_rank:
-            logger.info(f"[🔥WORKER] TP Rank {tp_rank}: Processing last rank outputs, is_pooling_model: {self.is_pooling_model}")
             if self.is_pooling_model:
-                logger.info(f"[🔥WORKER] TP Rank {tp_rank}: Running _dummy_pooler_run")
                 output = self._dummy_pooler_run(hidden_states)
-                logger.info(f"[🔥WORKER] TP Rank {tp_rank}: _dummy_pooler_run completed")
             else:
-                logger.info(f"[🔥WORKER] TP Rank {tp_rank}: Running _dummy_sampler_run")
                 output = self._dummy_sampler_run(last_hidden_states)
-                logger.info(f"[🔥WORKER] TP Rank {tp_rank}: _dummy_sampler_run completed")
         else:
-            logger.info(f"[🔥WORKER] TP Rank {tp_rank}: Not last rank, skipping output processing")
             output = None
-        
-        logger.info(f"[🔥WORKER] TP Rank {tp_rank}: Syncing device...")
         self._sync_device()
-        logger.info(f"[🔥WORKER] TP Rank {tp_rank}: Device sync completed, cleaning up...")
         del hidden_states, output
-        logger.info(f"[🔥WORKER] TP Rank {tp_rank}: Clearing encoder cache...")
         self.encoder_cache.clear()
-        logger.info(f"[🔥WORKER] TP Rank {tp_rank}: Running garbage collection...")
         gc.collect()
-        logger.info(f"[🔥WORKER] TP Rank {tp_rank}: profile_run completed")
 
     def capture_model(self) -> None:
         if not self.use_cuda_graph:
@@ -2445,6 +2416,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         )), "Some layers are not correctly initialized"
         return kv_cache_raw_tensors
 
+    # KV Cache 초기화 과정
     def _reshape_kv_cache_tensors(
         self,
         kv_cache_config: KVCacheConfig,
@@ -2467,28 +2439,28 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 kv_cache_config.kv_cache_groups):
             kv_cache_spec = kv_cache_group_spec.kv_cache_spec
             for layer_name in kv_cache_group_spec.layer_names:
+
+                # 해당 레이어의 raw tensor 추출
                 raw_tensor = kv_cache_raw_tensors[layer_name]
-                
-                # For non-uniform distribution, the tensor size might not perfectly
-                # match the unified page_size_bytes due to num_kv_heads adjustment
-                if raw_tensor.numel() % kv_cache_spec.page_size_bytes != 0:
-                    logger.warning(
-                        f"[🔥KV Cache] Layer {layer_name}: tensor size {raw_tensor.numel()} "
-                        f"not divisible by page_size_bytes {kv_cache_spec.page_size_bytes}. "
-                        f"This is expected for non-uniform weight distribution. "
-                        f"Using floor division to calculate num_blocks."
-                    )
-                    # Use the available tensor size, might waste some memory
-                    num_blocks = raw_tensor.numel() // kv_cache_spec.page_size_bytes
-                else:
-                    num_blocks = (raw_tensor.numel() //
+
+                num_blocks = (raw_tensor.numel() //
                                   kv_cache_spec.page_size_bytes)
+                    
                 if isinstance(kv_cache_spec, AttentionSpec):
                     has_attn = True
+
+                    # 해당 백엔드의 get_kv_cache_shape() 함수 호출하여 shape 계산
+                    # 페이지 크기 (page_size_bytes) = 블록 하나가 차지하는 물리적 메모리 크기
+
+                    # 텐서 shape는 메모리 용량의 개수
+                    # shape + dtype = 실제 메모리 사용량
+
                     kv_cache_shape = self.attn_backends[i].get_kv_cache_shape(
-                        num_blocks, kv_cache_spec.block_size,
-                        kv_cache_spec.num_kv_heads, kv_cache_spec.head_size)
+                        num_blocks, kv_cache_spec.block_size, 
+                        kv_cache_spec.num_kv_heads, kv_cache_spec.head_size) # 몇 개의 블럭인지, 블럭에 몇 개의 토큰이 들어갈지, 몇 개의 헤드가 있는지, 헤드의 사이즈
+                    
                     dtype = kv_cache_spec.dtype
+
                     try:
                         kv_cache_stride_order = self.attn_backends[
                             i].get_kv_cache_stride_order()
@@ -2497,11 +2469,14 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     except (AttributeError, NotImplementedError):
                         kv_cache_stride_order = tuple(
                             range(len(kv_cache_shape)))
+                        
                     # The allocation respects the backend-defined stride order
                     # to ensure the semantic remains consistent for each
                     # backend. We first obtain the generic kv cache shape and
                     # then permute it according to the stride order which could
                     # result in a non-contiguous tensor.
+
+                    # kv_cache_shape을 stride 순서에 맞게 재배열
                     kv_cache_shape = tuple(kv_cache_shape[i]
                                            for i in kv_cache_stride_order)
                     # Maintain original KV shape view.
@@ -2509,22 +2484,14 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                         kv_cache_stride_order.index(i)
                         for i in range(len(kv_cache_stride_order))
                     ]
-                    # Calculate the actual size we can use
-                    actual_size = num_blocks * kv_cache_spec.page_size_bytes
-                    if actual_size < raw_tensor.numel():
-                        # Use only the part of tensor that matches our calculated blocks
-                        logger.warning(
-                            f"[🔥KV Cache] Layer {layer_name}: Using {actual_size} bytes "
-                            f"out of {raw_tensor.numel()} available bytes"
-                        )
-                        # Create a view of only the usable portion
-                        usable_tensor = raw_tensor.flatten()[:actual_size]
-                        kv_caches[layer_name] = usable_tensor.view(
-                            dtype).view(kv_cache_shape).permute(*inv_order)
-                    else:
-                        kv_caches[layer_name] = kv_cache_raw_tensors[
-                            layer_name].view(dtype).view(kv_cache_shape).permute(
-                                *inv_order)
+
+                    kv_caches[layer_name] = (
+                        kv_cache_raw_tensors[layer_name]      # 1D 원시 tensor
+                        .view(dtype)                          # float16 등 dtype 재해석
+                        .view(kv_cache_shape)                 # multi-dim shape 부여
+                        .permute(*inv_order)                  # stride 순서 복구 (원래 의미대로)
+                    )
+                        
                 elif isinstance(kv_cache_spec, MambaSpec):
                     has_mamba = True
                     raw_tensor = kv_cache_raw_tensors[layer_name]
