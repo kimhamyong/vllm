@@ -1160,11 +1160,40 @@ class ModelConfig:
         total_num_attention_heads = getattr(self.hf_text_config,
                                             "num_attention_heads", 0)
         tensor_parallel_size = parallel_config.tensor_parallel_size
-        if total_num_attention_heads % tensor_parallel_size != 0:
-            raise ValueError(
-                f"Total number of attention heads ({total_num_attention_heads})"
-                " must be divisible by tensor parallel size "
-                f"({tensor_parallel_size}).")
+        
+        # Check for weight distribution ratio
+        weight_ratios = envs.VLLM_WEIGHT_RATIOS
+        if weight_ratios:
+            # Parse weight ratios (e.g., "3:1" -> [3, 1])
+            try:
+                ratios = [int(r) for r in weight_ratios.split(":")]
+                if len(ratios) != tensor_parallel_size:
+                    raise ValueError(
+                        f"Number of weight ratios ({len(ratios)}) must equal "
+                        f"tensor parallel size ({tensor_parallel_size})")
+                
+                sum_ratios = sum(ratios)
+                if total_num_attention_heads % sum_ratios != 0:
+                    raise ValueError(
+                        f"Total number of attention heads ({total_num_attention_heads}) "
+                        f"must be divisible by sum of weight ratios ({sum_ratios})")
+                
+                # Calculate heads per GPU based on ratios
+                heads_per_unit = total_num_attention_heads // sum_ratios
+                logger.info("Weight distribution enabled with ratios %s", ratios)
+                for i, ratio in enumerate(ratios):
+                    heads_for_rank = heads_per_unit * ratio
+                    logger.info("GPU %d will have %d attention heads", i, heads_for_rank)
+                    
+            except ValueError as e:
+                raise ValueError(f"Invalid weight ratios format: {e}")
+        else:
+            # Standard uniform distribution check
+            if total_num_attention_heads % tensor_parallel_size != 0:
+                raise ValueError(
+                    f"Total number of attention heads ({total_num_attention_heads})"
+                    " must be divisible by tensor parallel size "
+                    f"({tensor_parallel_size}).")
 
         if parallel_config.enable_expert_parallel:
             self._verify_with_expert_parallelism()

@@ -2652,7 +2652,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             if attn_module.attn_type == AttentionType.DECODER:
                 # Calculate actual KV heads based on weight distribution ratios
                 tp_size = self.vllm_config.parallel_config.tensor_parallel_size
-                tp_rank = self.vllm_config.parallel_config.rank
+                # Use tensor parallel rank, not global rank
+                from vllm.distributed import get_tensor_model_parallel_rank
+                tp_rank = get_tensor_model_parallel_rank()
                 
                 # Get weight distribution ratios from environment variable
                 ratios = get_weight_distribution_ratios(tp_size)
