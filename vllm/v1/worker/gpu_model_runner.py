@@ -353,6 +353,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
     def _sync_device(self) -> None:
         torch.cuda.synchronize()
 
+    # 스케쥴러가 처리한 요청 결과를 반영해서 캐시 상태 업데이트
     def _update_states(self, scheduler_output: "SchedulerOutput") -> None:
         """Update the cached states and the persistent batch with the scheduler
         output.
@@ -467,8 +468,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         # Update the states of the running/resumed requests.
         is_last_rank = get_pp_group().is_last_rank
-        req_data = scheduler_output.scheduled_cached_reqs
-        for i, req_id in enumerate(req_data.req_ids):
+        req_data = scheduler_output.scheduled_cached_reqs # 이번 단계에 처리할 기존 요청들의 정보
+        for i, req_id in enumerate(req_data.req_ids): # 이번 step에서 생성한 토큰 수, 사용된 KV block ID들, 프리엠션 여부 등 정보 추출
             req_state = self.requests[req_id]
             num_computed_tokens = req_data.num_computed_tokens[i]
             new_block_ids = req_data.new_block_ids[i]
@@ -481,6 +482,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 # When using PP, the scheduler sends the sampled tokens back,
                 # because there's no direct communication between the first-
                 # stage worker and the last-stage worker.
+
+                # new_token_ids: 마지막 rank에서 생성된 토큰들을 스케줄러가 수집해서 각 rank에게 전달한 리스트
+                # req_state.output_token_ids: 해당하는 요청에 대해 새로 생성된 토큰 목록
                 new_token_ids = req_data.new_token_ids[i]
                 # Add the sampled token(s) from the previous step (if any).
                 # This doesn't include "unverified" tokens like spec tokens.
@@ -1387,6 +1391,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # to make sure we are synced across pp ranks
         # TODO: Support overlapping mirco-batches
         # https://github.com/vllm-project/vllm/issues/18019
+
+        # 마지막 stage에서 계산한 logits를 다른 rank들과 broadcast
         broadcast_pp_output = \
             self.parallel_config.distributed_executor_backend \
             == "external_launcher" and len(get_pp_group().ranks) > 0
@@ -1398,19 +1404,24 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             get_pp_group().send_tensor_dict(hidden_states.tensors,
                                             all_gather_group=get_tp_group())
             logits = None
-        else:
+        else: # 마지막 rank 처리
             if self.input_batch.pooling_params:
                 return self._pool(hidden_states, num_scheduled_tokens,
                                   num_scheduled_tokens_np)
 
             sample_hidden_states = hidden_states[logits_indices]
             logits = self.model.compute_logits(sample_hidden_states, None)
+
+        # logits broadcast 처리 (from last to others)
         if broadcast_pp_output:
             model_output_broadcast_data = {
                 "logits": logits.contiguous(),
             } if logits is not None else {}
+
+            # 각 rank는 이 broadcast_tensor_dict() 호출로 동일한 logits을 받음
             model_output_broadcast_data = get_pp_group().broadcast_tensor_dict(
                 model_output_broadcast_data, src=len(get_pp_group().ranks) - 1)
+            
             assert model_output_broadcast_data is not None
             logits = model_output_broadcast_data["logits"]
 

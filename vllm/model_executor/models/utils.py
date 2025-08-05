@@ -623,24 +623,27 @@ def maybe_offload_to_cpu(module: torch.nn.Module) -> torch.nn.Module:
 
 
 def make_layers(
-    num_hidden_layers: int,
-    layer_fn: LayerFn,
-    prefix: str,
+    num_hidden_layers: int, # 전체 hidden layer 개수
+    layer_fn: LayerFn, # 각 layer를 생성하는 함수
+    prefix: str, # layer 이름 지정 시 prefix로 사용됨
 ) -> tuple[int, int, torch.nn.ModuleList]:
     """Make a list of layers with the given layer function, taking
     pipeline parallelism into account.
     """
     from vllm.distributed.parallel_state import get_pp_group
     from vllm.distributed.utils import get_pp_indices
+
+    # 해당 rank가 담당할 시작 layer와 끝 layer를 받아옴
     start_layer, end_layer = get_pp_indices(num_hidden_layers,
                                             get_pp_group().rank_in_group,
                                             get_pp_group().world_size)
+    
     modules = torch.nn.ModuleList(
-        [PPMissingLayer() for _ in range(start_layer)] + [
-            maybe_offload_to_cpu(layer_fn(prefix=f"{prefix}.{idx}"))
+        [PPMissingLayer() for _ in range(start_layer)] + [ # 이전 rank가 처리한 layer는 PPMissingLayer로 채움
+            maybe_offload_to_cpu(layer_fn(prefix=f"{prefix}.{idx}")) # 해당 rank가 담당하는 layer는 실제로 생성
             for idx in range(start_layer, end_layer)
-        ] + [PPMissingLayer() for _ in range(end_layer, num_hidden_layers)])
-    return start_layer, end_layer, modules
+        ] + [PPMissingLayer() for _ in range(end_layer, num_hidden_layers)]) # 이후 rank가 처리할 layer는 PPMissingLayer로 채움
+    return start_layer, end_layer, modules # 이걸 합쳐서 전체 길이 = num_hidden_layers인 ModuleList를 만듦
 
 
 # NOTE: don't use lru_cache here because it can prevent garbage collection

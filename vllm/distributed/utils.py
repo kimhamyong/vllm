@@ -86,6 +86,9 @@ def split_tensor_along_last_dim(
     return tensor_list
 
 
+# num_hidden_layers: 전체 모델의 hidden layer 수
+# pp_rank: 현재 프로세스의 pipeline parallel rank (0부터 시작)
+# pp_size: 전체 pipeline parallel 단계 개수 (총 몇 등분할 것인지)
 def get_pp_indices(num_hidden_layers: int, pp_rank: int,
                    pp_size: int) -> tuple[int, int]:
     """Try to evenly distribute layers across partitions.
@@ -116,9 +119,11 @@ def get_pp_indices(num_hidden_layers: int, pp_rank: int,
             raise ValueError(
                 f"{sum(partitions)=} does not match {num_hidden_layers=}.")
     else:
+        # 기본적으로 layers_per_partition 개씩 균등하게 분배
         layers_per_partition = num_hidden_layers // pp_size
         partitions = [layers_per_partition for _ in range(pp_size)]
 
+        # 나머지 layer 처리
         if remaining_layers := num_hidden_layers % pp_size:
             for i in range(2, remaining_layers + 2):
                 partitions[-i] += 1
@@ -128,6 +133,7 @@ def get_pp_indices(num_hidden_layers: int, pp_rank: int,
                 "VLLM_PP_LAYER_PARTITION environment variable",
                 ",".join(str(p) for p in partitions))
 
+    # 최종적으로 각 rank가 맡을 layer 범위 계산
     start_layer = sum(partitions[:pp_rank])
     end_layer = start_layer + partitions[pp_rank]
 

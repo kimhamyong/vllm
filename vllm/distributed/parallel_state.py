@@ -62,8 +62,8 @@ def _split_tensor_dict(
          by its metadata.
     2. A list of tensors.
     """
-    metadata_list: list[tuple[str, Any]] = []
-    tensor_list: list[torch.Tensor] = []
+    metadata_list: list[tuple[str, Any]] = [] # 메타데이터 리스트
+    tensor_list: list[torch.Tensor] = [] # 실제 텐서 리스트
     for key, value in tensor_dict.items():
         if isinstance(value, torch.Tensor):
             # Note: we cannot use `value.device` here,
@@ -72,8 +72,8 @@ def _split_tensor_dict(
             # receiving side will set the device index.
             device = value.device.type
             metadata_list.append(
-                (key, TensorMetadata(device, value.dtype, value.size())))
-            tensor_list.append(value)
+                (key, TensorMetadata(device, value.dtype, value.size()))) # 메타데이터 (device, dtype, size)를 TensorMetadata로 묶어서 key와 함께 저장
+            tensor_list.append(value) # 텐서 자체는 따로 저장
         else:
             metadata_list.append((key, value))
     return metadata_list, tensor_list

@@ -715,10 +715,11 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
         # Special case for per-tensor scale to load scalar into fused array.
         needs_scalar_to_array = getattr(param, "needs_scalar_to_array", False)
 
+        # 절차식(if/attr 기반)로 직접 텐서를 잘라서 param.data에 복사하는 스타일
         if loaded_shard_id is None:
             # Loaded weight is already fused on disk (mlp).
             # (e.g., Phi-3's gate_up_proj).
-            if output_dim is None:
+            if output_dim is None: # 출력 축을 따라 쪼갤 필요가 없는 완전한 최종 형태 ->  그대로 복사
                 if needs_scalar_to_array:
                     param_data, loaded_weight = adjust_scalar_to_fused_array(
                         param_data, loaded_weight, 0)
@@ -763,12 +764,15 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
                 self.weight_loader(param, loaded_weight_shard, shard_id)
             return
 
+        # loaded_shard_id가 주어졌을 때 TP 분할 수행
         assert loaded_shard_id < len(self.output_sizes)
         tp_rank = get_tensor_model_parallel_rank()
         tp_size = get_tensor_model_parallel_world_size()
-        if output_dim is not None:
+
+        if output_dim is not None: # 먼저 (gate/up 등) 서브-조각으로 쪼개고 내 tp_rank 몫만 param_data에 복사
             shard_offset = sum(self.output_sizes[:loaded_shard_id]) // tp_size
             shard_size = self.output_sizes[loaded_shard_id] // tp_size
+
             # Special case for quantization.
             # If quantized, we need to adjust the offset and size to account
             # for the packing.
@@ -856,26 +860,30 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
                                                        shard_size)
             self.weight_loader_v2(param, loaded_weight_shard, shard_id)
 
+    # 파라미터 클래스의 메서드에 위임해서 로딩하며, FP8 블록양자화 같은 새 로직을 타입별로 캡슐화
     def weight_loader_v2(self,
                          param: BasevLLMParameter,
                          loaded_weight: torch.Tensor,
                          loaded_shard_id: Optional[int] = None):
-        if loaded_shard_id is None:
-            if isinstance(param, PerTensorScaleParameter):
+        if loaded_shard_id is None: # 파라미터 객체가 내부 규칙에 따라 알아서 반영하도록
+            if isinstance(param, PerTensorScaleParameter): # 한 텐서당 하나의 스케일(스칼라/작은 텐서)이므로 별도 분할 없이 shard_id=0로 저장
                 param.load_merged_column_weight(loaded_weight=loaded_weight,
                                                 shard_id=0)
                 return
-            elif type(param) in (RowvLLMParameter, BasevLLMParameter):
+            elif type(param) in (RowvLLMParameter, BasevLLMParameter): # 출력축으로 자를 필요가 없어, 전체를 타입 메서드에 맡김
                 param.load_merged_column_weight(loaded_weight=loaded_weight)
                 return
             # TODO: @dsikka - move to parameter.py
-            self._load_fused_module_from_checkpoint(param, loaded_weight)
+
+            # 그 외 → _load_fused_module_from_checkpoint로 서브-조각 분할 → 각 조각에 대해 weight_loader_v2 재호출
+            self._load_fused_module_from_checkpoint(param, loaded_weight) 
             return
 
         assert loaded_shard_id < len(self.output_sizes)
 
         tp_size = get_tensor_model_parallel_world_size()
 
+        # shard_id가 주어졌을 때
         if isinstance(param, BlockQuantScaleParameter):
             from vllm.model_executor.layers.quantization.fp8 import (
                 Fp8LinearMethod, Fp8MoEMethod)
@@ -885,6 +893,7 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
             weight_block_size = self.quant_method.quant_config.weight_block_size
             assert weight_block_size is not None
             block_n, _ = weight_block_size[0], weight_block_size[1]
+            # TP 분할 기준으로 shard_offset/size 계산
             shard_offset = (
                 (sum(self.output_sizes[:loaded_shard_id]) + block_n - 1) //
                 block_n) // tp_size
@@ -982,7 +991,7 @@ class QKVParallelLinear(ColumnParallelLinear):
         output_size = (self.total_num_heads +
                        2 * self.total_num_kv_heads) * self.head_size
         
-        # 전체 Q, K, V projection의 크기 (weight loading용)
+        # 전체 Q, K, V projection의 크기
         self.output_sizes = [
             self.total_num_heads * self.head_size,  # q_proj
             self.total_num_kv_heads * self.head_size,  # k_proj
@@ -1335,6 +1344,7 @@ class QKVParallelLinear(ColumnParallelLinear):
                     assert False, f"param_data.shape {param_data.shape} != loaded_weight.shape {loaded_weight.shape}"
             else:
                 assert False, f"param_data.shape {param_data.shape} != loaded_weight.shape {loaded_weight.shape}"
+
         param_data.copy_(loaded_weight)
 
 
@@ -1571,7 +1581,8 @@ class RowParallelLinear(LinearBase):
         return s
 
 
-class QKVCrossParallelLinear(LinearBase):
+class QKVCrossParallelLinear(LinearBase): # Encoder 단에서 나오는 출력이 Decoder 단으로 들어가는 구조에서 사용됨
+    # Query 는 Decoder 단의 이전 Layer 로 부터 들어오며, Key 와 Value 는 Encoder 단에서 들어오는 형태
     """Linear layers for efficient cross-attention's QKV transformation.
 
     Args:
