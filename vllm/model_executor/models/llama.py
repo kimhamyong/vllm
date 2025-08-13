@@ -55,7 +55,25 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
                     is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers,
                     maybe_prefix)
+import os
+from vllm.distributed import (get_tensor_model_parallel_rank)
 
+
+def get_weight_distribution_ratios(tp_size: int) -> list[int]:
+    env_ratios = os.environ.get('VLLM_WEIGHT_RATIOS', None)
+    
+    if env_ratios:
+        try:
+            ratios = [int(r) for r in env_ratios.split(':')]
+            if len(ratios) != tp_size:
+                return [1] * tp_size
+            if any(r <= 0 for r in ratios):
+                return [1] * tp_size
+            return ratios
+        except ValueError:
+            return [1] * tp_size
+    
+    return [1] * tp_size
 
 class LlamaMLP(nn.Module):
 
@@ -140,8 +158,23 @@ class LlamaAttention(nn.Module):
         # Phi models introduced a partial_rotary_factor parameter in the config
         self.partial_rotary_factor = getattr(config, "partial_rotary_factor",
                                              1)
-        self.q_size = self.num_heads * self.head_dim
-        self.kv_size = self.num_kv_heads * self.head_dim
+        
+        # 전체 q_size와 kv_size 계산
+        total_q_size = self.total_num_heads * self.head_dim
+        total_kv_size = self.total_num_kv_heads * self.head_dim
+        tp_rank = get_tensor_model_parallel_rank()
+        weight_ratios = get_weight_distribution_ratios(tp_size)
+
+        if len(set(weight_ratios)) == 1:
+            # 균등 분배: 기존 방식 사용
+            self.q_size = self.num_heads * self.head_dim
+            self.kv_size = self.num_kv_heads * self.head_dim
+        else:
+            # 비균등 분배: 비율 기반 계산
+            total_ratio = sum(weight_ratios)
+            self.q_size = int(total_q_size * weight_ratios[tp_rank] / total_ratio)
+            self.kv_size = int(total_kv_size * weight_ratios[tp_rank] / total_ratio)
+       
         self.scaling = self.head_dim**-0.5
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings

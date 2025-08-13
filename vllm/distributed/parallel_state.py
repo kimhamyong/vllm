@@ -680,7 +680,7 @@ class GroupCoordinator:
             # send-allgather: send only a slice, then do allgather.
             if (all_gather_group is not None
                     and tensor.numel() % all_gather_size == 0):
-                tensor = tensor.reshape(all_gather_size, -1)[all_gather_rank]
+                tensor = tensor.reshape(all_gather_size, -1)[all_gather_rank] # 텐서를 TP 크기(all_gather_size)만큼의 행으로 재구성
 
             if tensor.is_cpu:
                 # use metadata_group for CPU tensors

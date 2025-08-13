@@ -216,7 +216,8 @@ class Attention(nn.Module):
             # We skip reshaping query, key and value tensors for the MLA
             # backend since these tensors have different semantics and are
             # processed differently.
-            if not self.use_mla:
+            if not self.use_mla: # query, key, value 텐서를 헤드 수에 맞춰 리쉐이프
+                
                 # Reshape the query, key, and value tensors.
                 # NOTE(woosuk): We do this outside the custom op to minimize the
                 # CPU overheads from the non-CUDA-graph regions.
@@ -224,12 +225,13 @@ class Attention(nn.Module):
                 # Calculate actual head counts directly from tensor dimensions
                 # This is the most reliable approach for weight distribution ratios
                 query_dim = query.shape[-1]
+                
+                assert query_dim % self.head_size == 0, (
+                    f"query_dim ({query_dim}) must be divisible by head_size ({self.head_size})"
+                )
+                
                 actual_num_heads = query_dim // self.head_size
-                
-                # Validation: if calculation fails, fall back to uniform distribution
-                if query_dim % self.head_size != 0:
-                    actual_num_heads = self.num_heads
-                
+
                 # For KV heads, calculate from key tensor if available
                 if key is not None:
                     key_dim = key.shape[-1]

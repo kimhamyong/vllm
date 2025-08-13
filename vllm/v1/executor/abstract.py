@@ -73,21 +73,7 @@ class Executor(ExecutorBase):
         pass
 
     def determine_available_memory(self) -> list[int]:  # in bytes
-        from vllm.logger import init_logger
-        logger = init_logger(__name__)
-        
-        logger.info("[💫 Executor Debug] Starting determine_available_memory - calling collective_rpc")
-
-        def call_stack_string(): 
-            """get the current call stack for debugging purposes."""
-            import traceback
-            return f"Call Stack:\n" + ''.join(traceback.format_stack())
-        
-        #print(f"[💫💫💫 Executor Debug] {call_stack_string()}")
-        
         output = self.collective_rpc("determine_available_memory")        
-        
-        logger.info(f"[💫 Executor Debug] collective_rpc completed, output: {output}")
         
         return output
 

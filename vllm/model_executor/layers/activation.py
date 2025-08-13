@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Custom activation functions."""
 import math
+import os
 from typing import Optional
 
 import torch
@@ -14,6 +15,23 @@ from vllm.model_executor.custom_op import CustomOp
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.platforms import current_platform
 from vllm.utils import LazyDict
+
+
+def get_weight_distribution_ratios(tp_size: int) -> list[int]:
+    env_ratios = os.environ.get('VLLM_WEIGHT_RATIOS', None)
+    
+    if env_ratios:
+        try:
+            ratios = [int(r) for r in env_ratios.split(':')]
+            if len(ratios) != tp_size:
+                return [1] * tp_size
+            if any(r <= 0 for r in ratios):
+                return [1] * tp_size
+            return ratios
+        except ValueError:
+            return [1] * tp_size
+    
+    return [1] * tp_size
 
 
 @CustomOp.register("fatrelu_and_mul")
@@ -368,12 +386,23 @@ class ScaledActivation(nn.Module):
         param_data = param.data
         # true라면; 디스크에서 불러온 weight에서 현재 GPU rank에 해당하는 조각만 가져와야 함
         if self.input_is_parallel:
-            # tp_rank: 현재 GPU의 rank (예: 0번, 1번, 2번 GPU)
+            # tp_rank: 현재 GPU의 rank
             tp_rank = get_tensor_model_parallel_rank()
-            # shard_size: param이 저장된 부분의 크기
-            shard_size = param_data.shape[0]
-            # start_idx: 전체 weight에서 이 rank가 가져올 시작 위치
-            start_idx = tp_rank * shard_size
+            tp_size = get_tensor_model_parallel_world_size()
+            
+            # 환경변수에서 가중치 비율 가져오기
+            weight_ratios = get_weight_distribution_ratios(tp_size)
+            total_ratio = sum(weight_ratios)
+            cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+            
+            # 전체 weight 크기
+            total_size = loaded_weight.shape[0]
+            
+            # 현재 rank의 시작과 끝 위치 계산
+            start_idx = int(total_size * cumulative_ratios[tp_rank] / total_ratio)
+            end_idx = int(total_size * cumulative_ratios[tp_rank + 1] / total_ratio)
+            shard_size = end_idx - start_idx
+            
             # 전체 weight에서 dim=0 방향으로 shard_size만큼 슬라이스
             loaded_weight = loaded_weight.narrow(0, start_idx, shard_size)
         assert param_data.shape == loaded_weight.shape

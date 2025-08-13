@@ -143,16 +143,16 @@ class OPTDecoderLayer(nn.Module):
             self.embed_dim,
             elementwise_affine=config.layer_norm_elementwise_affine)
         self.fc1 = ColumnParallelLinear(
-            self.embed_dim,
-            config.ffn_dim,
+            self.embed_dim, # input
+            config.ffn_dim, # output
             bias=config.enable_bias,
             quant_config=quant_config,
             prefix=f"{prefix}.fc1",
         )
         self.activation_fn = get_act_fn(config.activation_function)
         self.fc2 = RowParallelLinear(
-            config.ffn_dim,
-            self.embed_dim,
+            config.ffn_dim, # input
+            self.embed_dim, # output
             bias=config.enable_bias,
             quant_config=quant_config,
             prefix=f"{prefix}.fc2",

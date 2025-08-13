@@ -35,17 +35,6 @@ logger = init_logger(__name__)
 
 
 def get_weight_distribution_ratios(tp_size: int) -> list[int]:
-    """환경 변수에서 가중치 분배 비율을 읽어옵니다.
-    
-    환경 변수 VLLM_WEIGHT_RATIOS 형식: "3:1" 또는 "1:2:2:1"
-    기본값: 균등 분배 (모든 rank에 동일한 비율)
-    
-    Args:
-        tp_size: tensor parallel world size
-        
-    Returns:
-        각 rank의 가중치 비율 리스트
-    """
     env_ratios = os.environ.get('VLLM_WEIGHT_RATIOS', None)
     
     if env_ratios:
@@ -536,8 +525,17 @@ class ColumnParallelLinear(LinearBase):
             final_shape = list(loaded_weight.shape)
             if output_dim is not None:
                 tp_size = get_tensor_model_parallel_world_size()
-                assert final_shape[output_dim] % tp_size == 0
-                final_shape[output_dim] = final_shape[output_dim] // tp_size
+                weight_ratios = get_weight_distribution_ratios(tp_size)
+                
+                if len(set(weight_ratios)) == 1:
+                    # 균등 분배: 기존 방식 사용
+                    assert final_shape[output_dim] % tp_size == 0
+                    final_shape[output_dim] = final_shape[output_dim] // tp_size
+                else:
+                    # 비균등 분배: 비율 기반 계산
+                    total_ratio = sum(weight_ratios)
+                    final_shape[output_dim] = int(final_shape[output_dim] * weight_ratios[tp_rank] / total_ratio)
+                    
             param.materialize(final_shape, dtype=loaded_weight.dtype)
 
         param_data = param.data
@@ -695,10 +693,27 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
         if is_gguf_weight:
             tp_size = get_tensor_model_parallel_world_size()
             tp_rank = get_tensor_model_parallel_rank()
+            weight_ratios = get_weight_distribution_ratios(tp_size)
 
             output_dim = getattr(param, "output_dim", None)
-            shard_size = loaded_weight.size(output_dim) // tp_size
-            start_idx = tp_rank * shard_size
+            
+            if len(set(weight_ratios)) == 1:
+                # 균등 분배: 기존 방식 사용
+                shard_size = loaded_weight.size(output_dim) // tp_size
+                start_idx = tp_rank * shard_size
+            else:
+                # 비균등 분배: 비율 기반 계산
+                total_ratio = sum(weight_ratios)
+                cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+                total_size = loaded_weight.size(output_dim)
+                
+                start_idx = int(total_size * cumulative_ratios[tp_rank] / total_ratio)
+                end_idx = int(total_size * cumulative_ratios[tp_rank + 1] / total_ratio)
+                shard_size = end_idx - start_idx
+            
+            print(f"🔍[GGUF_MERGED_DEBUG] Rank {tp_rank}: weight_ratios={weight_ratios}, "
+                  f"total_size={loaded_weight.size(output_dim)}, start_idx={start_idx}, "
+                  f"shard_size={shard_size}, loaded_shard_id={loaded_shard_id}")
 
             if loaded_shard_id is not None:
                 loaded_weight = loaded_weight.narrow(output_dim, start_idx,
@@ -715,7 +730,6 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
         # Special case for per-tensor scale to load scalar into fused array.
         needs_scalar_to_array = getattr(param, "needs_scalar_to_array", False)
 
-        # 절차식(if/attr 기반)로 직접 텐서를 잘라서 param.data에 복사하는 스타일
         if loaded_shard_id is None:
             # Loaded weight is already fused on disk (mlp).
             # (e.g., Phi-3's gate_up_proj).
@@ -768,10 +782,24 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
         assert loaded_shard_id < len(self.output_sizes)
         tp_rank = get_tensor_model_parallel_rank()
         tp_size = get_tensor_model_parallel_world_size()
+        weight_ratios = get_weight_distribution_ratios(tp_size)
 
         if output_dim is not None: # 먼저 (gate/up 등) 서브-조각으로 쪼개고 내 tp_rank 몫만 param_data에 복사
-            shard_offset = sum(self.output_sizes[:loaded_shard_id]) // tp_size
-            shard_size = self.output_sizes[loaded_shard_id] // tp_size
+            if len(set(weight_ratios)) == 1:
+                # 균등 분배: 원래 방식 사용
+                shard_offset = sum(self.output_sizes[:loaded_shard_id]) // tp_size
+                shard_size = self.output_sizes[loaded_shard_id] // tp_size
+            else:
+                # 비균등 분배: 전체 비율을 고려하여 계산
+                total_ratio = sum(weight_ratios)
+                cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+                
+                # 각 loaded_shard_id에 대한 전체 크기
+                base_offset = sum(self.output_sizes[:loaded_shard_id])
+                loaded_shard_size = self.output_sizes[loaded_shard_id]
+                
+                shard_offset = base_offset * weight_ratios[tp_rank] // total_ratio
+                shard_size = loaded_shard_size * weight_ratios[tp_rank] // total_ratio
 
             # Special case for quantization.
             # If quantized, we need to adjust the offset and size to account
@@ -800,7 +828,19 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
 
             param_data = param_data.narrow(output_dim, shard_offset,
                                            shard_size)
-            start_idx = tp_rank * shard_size
+            
+            if len(set(weight_ratios)) == 1:
+                # 균등 분배: 원래 방식 사용
+                start_idx = tp_rank * shard_size
+            else:
+                # 비균등 분배: 누적 비율로 시작 위치 계산
+                total_ratio = sum(weight_ratios)
+                cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+                
+                # loaded_weight에서의 시작 위치 계산
+                loaded_shard_size = self.output_sizes[loaded_shard_id]
+                start_idx = loaded_shard_size * cumulative_ratios[tp_rank] // total_ratio
+            
             if not is_sharded_weight:
                 loaded_weight = loaded_weight.narrow(output_dim, start_idx,
                                                      shard_size)
@@ -893,15 +933,53 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
             weight_block_size = self.quant_method.quant_config.weight_block_size
             assert weight_block_size is not None
             block_n, _ = weight_block_size[0], weight_block_size[1]
-            # TP 분할 기준으로 shard_offset/size 계산
-            shard_offset = (
-                (sum(self.output_sizes[:loaded_shard_id]) + block_n - 1) //
-                block_n) // tp_size
-            shard_size = ((self.output_sizes[loaded_shard_id] + block_n - 1) //
-                          block_n // tp_size)
+            # 환경변수에서 가중치 분배 비율 가져오기
+            weight_ratios = get_weight_distribution_ratios(tp_size)
+            tp_rank = get_tensor_model_parallel_rank()
+            
+            if len(set(weight_ratios)) == 1:
+                # 균등 분배: 기존 방식 사용
+                shard_offset = (
+                    (sum(self.output_sizes[:loaded_shard_id]) + block_n - 1) //
+                    block_n) // tp_size
+                shard_size = ((self.output_sizes[loaded_shard_id] + block_n - 1) //
+                              block_n // tp_size)
+            else:
+                # 비균등 분배: 비율 기반 계산
+                total_ratio = sum(weight_ratios)
+                
+                # 이전 projection들의 offset 계산 (block 단위로)
+                prev_offset = 0
+                for i in range(loaded_shard_id):
+                    total_blocks = (self.output_sizes[i] + block_n - 1) // block_n
+                    rank_blocks = int(total_blocks * weight_ratios[tp_rank] / total_ratio)
+                    prev_offset += rank_blocks
+                
+                shard_offset = prev_offset
+                total_blocks = (self.output_sizes[loaded_shard_id] + block_n - 1) // block_n
+                shard_size = int(total_blocks * weight_ratios[tp_rank] / total_ratio)
         else:
-            shard_offset = sum(self.output_sizes[:loaded_shard_id]) // tp_size
-            shard_size = self.output_sizes[loaded_shard_id] // tp_size
+            # 환경변수에서 가중치 분배 비율 가져오기
+            weight_ratios = get_weight_distribution_ratios(tp_size)
+            tp_rank = get_tensor_model_parallel_rank()
+            
+            if len(set(weight_ratios)) == 1:
+                # 균등 분배: 기존 방식 사용
+                shard_offset = sum(self.output_sizes[:loaded_shard_id]) // tp_size
+                shard_size = self.output_sizes[loaded_shard_id] // tp_size
+            else:
+                # 비균등 분배: 비율 기반 계산
+                total_ratio = sum(weight_ratios)
+                cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+                
+                # 이전 projection들의 offset 계산
+                prev_offset = 0
+                for i in range(loaded_shard_id):
+                    rank_size = int(self.output_sizes[i] * weight_ratios[tp_rank] / total_ratio)
+                    prev_offset += rank_size
+                
+                shard_offset = prev_offset
+                shard_size = int(self.output_sizes[loaded_shard_id] * weight_ratios[tp_rank] / total_ratio)
 
         param.load_merged_column_weight(loaded_weight=loaded_weight,
                                         shard_id=loaded_shard_id,
@@ -1133,12 +1211,28 @@ class QKVParallelLinear(ColumnParallelLinear):
             # 현재 TP 설정 가져오기
             tp_size = get_tensor_model_parallel_world_size()
             tp_rank = get_tensor_model_parallel_rank()
+            weight_ratios = get_weight_distribution_ratios(tp_size)
 
             output_dim = getattr(param, "output_dim", None)
             
             # TP rank 기준으로 slicing할 크기와 시작 위치 계산
-            shard_size = loaded_weight.size(output_dim) // tp_size
-            start_idx = tp_rank * shard_size
+            if len(set(weight_ratios)) == 1:
+                # 균등 분배: 기존 방식 사용
+                shard_size = loaded_weight.size(output_dim) // tp_size
+                start_idx = tp_rank * shard_size
+            else:
+                # 비균등 분배: 비율 기반 계산
+                total_ratio = sum(weight_ratios)
+                cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+                total_size = loaded_weight.size(output_dim)
+                
+                start_idx = int(total_size * cumulative_ratios[tp_rank] / total_ratio)
+                end_idx = int(total_size * cumulative_ratios[tp_rank + 1] / total_ratio)
+                shard_size = end_idx - start_idx
+            
+            print(f"🔍[GGUF_QKV_DEBUG] Rank {tp_rank}: weight_ratios={weight_ratios}, "
+                  f"total_size={total_size}, start_idx={start_idx}, "
+                  f"shard_size={shard_size}, loaded_shard_id={loaded_shard_id}")
 
             # Q/K/V 중 하나가 주어졌을 때
             if loaded_shard_id is not None:
@@ -1469,7 +1563,17 @@ class RowParallelLinear(LinearBase):
         if is_gguf_weight and isinstance(param, UninitializedParameter):
             weight_shape = list(loaded_weight.shape)
             if input_dim:
-                weight_shape[input_dim] = weight_shape[input_dim] // tp_size
+                # 환경변수에서 가중치 분배 비율 가져오기
+                weight_ratios = get_weight_distribution_ratios(tp_size)
+                
+                if len(set(weight_ratios)) == 1:
+                    # 균등 분배: 기존 방식 사용
+                    weight_shape[input_dim] = weight_shape[input_dim] // tp_size
+                else:
+                    # 비균등 분배: 비율 기반 계산
+                    total_ratio = sum(weight_ratios)
+                    original_size = weight_shape[input_dim]
+                    weight_shape[input_dim] = int(original_size * weight_ratios[tp_rank] / total_ratio)
             param.materialize(tuple(weight_shape), dtype=loaded_weight.dtype)
 
         param_data = param.data

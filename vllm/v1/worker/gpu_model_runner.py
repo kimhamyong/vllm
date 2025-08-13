@@ -1178,6 +1178,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             assert intermediate_tensors is not None
             for k, v in intermediate_tensors.items():
                 is_scattered = "residual" and is_residual_scattered
+                # 모든 중간 텐서에 대해 이번 step 분량만 복사
                 copy_len = num_tokens // tp if is_scattered else \
                     num_tokens
                 self.intermediate_tensors[k][:copy_len].copy_(
@@ -1351,10 +1352,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             positions = self.positions[:num_input_tokens]
 
         if get_pp_group().is_first_rank:
-            intermediate_tensors = None
+            intermediate_tensors = None # 첫번째 PP Rank는 입력부터 시작
         else:
             intermediate_tensors = self.sync_and_slice_intermediate_tensors(
-                num_input_tokens, intermediate_tensors, True)
+                num_input_tokens, intermediate_tensors, True) # 이전 PP stage에서 받은 텐서를 동기화/슬라이스
 
         # Some attention backends only support CUDA Graphs in pure decode.
         # If attention doesn't support CUDA Graphs for this batch, but we
@@ -1396,6 +1397,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         broadcast_pp_output = \
             self.parallel_config.distributed_executor_backend \
             == "external_launcher" and len(get_pp_group().ranks) > 0
+        
         if not get_pp_group().is_last_rank:
             # For mid-pipeline stages, return the hidden states.
             if not broadcast_pp_output:
@@ -1404,6 +1406,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             get_pp_group().send_tensor_dict(hidden_states.tensors,
                                             all_gather_group=get_tp_group())
             logits = None
+            
         else: # 마지막 rank 처리
             if self.input_batch.pooling_params:
                 return self._pool(hidden_states, num_scheduled_tokens,

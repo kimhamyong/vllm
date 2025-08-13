@@ -353,7 +353,10 @@ class Worker(WorkerBase):
             assert isinstance(output, IntermediateTensors)
             get_pp_group().send_tensor_dict(output.tensors,
                                             all_gather_group=get_tp_group())
+
             output = EMPTY_MODEL_RUNNER_OUTPUT
+
+        
 
         assert isinstance(output, ModelRunnerOutput)
         if has_kv_transfer_group():
