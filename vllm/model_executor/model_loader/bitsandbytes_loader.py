@@ -321,6 +321,10 @@ class BitsAndBytesModelLoader(BaseModelLoader):
 
         tp_size = get_tensor_model_parallel_world_size()
         tp_rank = get_tensor_model_parallel_rank()
+        
+        # Import the function from linear module to get weight distribution ratios
+        from vllm.model_executor.layers.linear import get_weight_distribution_ratios
+        weight_ratios = get_weight_distribution_ratios(tp_size)
 
         for (
                 org_weight_name,
@@ -340,8 +344,18 @@ class BitsAndBytesModelLoader(BaseModelLoader):
                         mapped_weight_name.startswith(module)
                         for module in self.column_sharded_weights_modules):
                     total_size = weight_tensor.size(-1)
-                    start_index = total_size // tp_size * tp_rank
-                    end_index = total_size // tp_size * (tp_rank + 1)
+                    
+                    if len(set(weight_ratios)) == 1:
+                        # Even distribution: use original method
+                        start_index = total_size // tp_size * tp_rank
+                        end_index = total_size // tp_size * (tp_rank + 1)
+                    else:
+                        # Uneven distribution: use ratio-based calculation
+                        total_ratio = sum(weight_ratios)
+                        cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+                        start_index = int(total_size * cumulative_ratios[tp_rank] / total_ratio)
+                        end_index = int(total_size * cumulative_ratios[tp_rank + 1] / total_ratio)
+                    
                     weight_sub_tensor = weight_tensor[...,
                                                       start_index:end_index]
                 # Weights have fused on disk. In this case, we assume that the
@@ -360,11 +374,23 @@ class BitsAndBytesModelLoader(BaseModelLoader):
                     # get the start/end index of each shard weight tensor
                     total_start_index = list(
                         itertools.accumulate([0] + total_shard_sizes))[:-1]
-                    shard_weights_index = [(
-                        idx + size // tp_size * tp_rank,
-                        idx + size // tp_size * (tp_rank + 1),
-                    ) for idx, size in zip(total_start_index,
-                                           total_shard_sizes)]
+                    
+                    if len(set(weight_ratios)) == 1:
+                        # Even distribution: use original method
+                        shard_weights_index = [(
+                            idx + size // tp_size * tp_rank,
+                            idx + size // tp_size * (tp_rank + 1),
+                        ) for idx, size in zip(total_start_index,
+                                               total_shard_sizes)]
+                    else:
+                        # Uneven distribution: use ratio-based calculation
+                        total_ratio = sum(weight_ratios)
+                        cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+                        shard_weights_index = []
+                        for idx, size in zip(total_start_index, total_shard_sizes):
+                            start_in_shard = int(size * cumulative_ratios[tp_rank] / total_ratio)
+                            end_in_shard = int(size * cumulative_ratios[tp_rank + 1] / total_ratio)
+                            shard_weights_index.append((idx + start_in_shard, idx + end_in_shard))
                     # slice and reorder the weight tensor
                     weight_tensor = [
                         weight_tensor[start_index:end_index, ...]
@@ -374,8 +400,18 @@ class BitsAndBytesModelLoader(BaseModelLoader):
                 # Shard by row
                 else:
                     total_size = weight_tensor.size(0)
-                    start_index = total_size // tp_size * tp_rank
-                    end_index = total_size // tp_size * (tp_rank + 1)
+                    
+                    if len(set(weight_ratios)) == 1:
+                        # Even distribution: use original method
+                        start_index = total_size // tp_size * tp_rank
+                        end_index = total_size // tp_size * (tp_rank + 1)
+                    else:
+                        # Uneven distribution: use ratio-based calculation
+                        total_ratio = sum(weight_ratios)
+                        cumulative_ratios = [0] + [sum(weight_ratios[:i+1]) for i in range(len(weight_ratios))]
+                        start_index = int(total_size * cumulative_ratios[tp_rank] / total_ratio)
+                        end_index = int(total_size * cumulative_ratios[tp_rank + 1] / total_ratio)
+                    
                     weight_sub_tensor = weight_tensor[start_index:end_index,
                                                       ...]
 

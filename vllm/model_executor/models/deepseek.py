@@ -195,6 +195,7 @@ class DeepseekAttention(nn.Module):
         super().__init__()
         self.hidden_size = hidden_size
         tp_size = get_tensor_model_parallel_world_size()
+        tp_rank = get_tensor_model_parallel_rank()
         self.total_num_heads = num_heads
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size
@@ -209,8 +210,24 @@ class DeepseekAttention(nn.Module):
             assert tp_size % self.total_num_kv_heads == 0
         self.num_kv_heads = max(1, self.total_num_kv_heads // tp_size)
         self.head_dim = hidden_size // self.total_num_heads
-        self.q_size = self.num_heads * self.head_dim
-        self.kv_size = self.num_kv_heads * self.head_dim
+        
+        # 비균등 TP 지원을 위한 가중치 비율 계산
+        from vllm.model_executor.layers.linear import get_weight_distribution_ratios
+        weight_ratios = get_weight_distribution_ratios()
+        
+        # Query와 KV의 전체 크기
+        total_q_size = self.total_num_heads * self.head_dim
+        total_kv_size = self.total_num_kv_heads * self.head_dim
+        
+        if len(set(weight_ratios)) == 1:
+            # 균등 분배: 기존 방식
+            self.q_size = self.num_heads * self.head_dim
+            self.kv_size = self.num_kv_heads * self.head_dim
+        else:
+            # 비균등 분배: 비율 기반 계산
+            total_ratio = sum(weight_ratios)
+            self.q_size = int(total_q_size * weight_ratios[tp_rank] / total_ratio)
+            self.kv_size = int(total_kv_size * weight_ratios[tp_rank] / total_ratio)
         self.scaling = self.head_dim**-0.5
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
