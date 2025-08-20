@@ -181,7 +181,7 @@ class VocabParallelEmbeddingShardIndices:
 
 @torch.compile(dynamic=True, backend=current_platform.simple_compile_backend)
 def get_masked_input_and_mask(
-        input_: torch.Tensor, org_vocab_start_index: int,
+        input_: torch.Tensor, org_vocab_start_index: int, # 토큰 아이디
         org_vocab_end_index: int, num_org_vocab_padding: int,
         added_vocab_start_index: int,
         added_vocab_end_index: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -299,6 +299,7 @@ class VocabParallelEmbedding(torch.nn.Module):
         total_ratio = sum(weight_ratios)
         current_rank_ratio = weight_ratios[tp_rank]
         self.num_embeddings_per_partition = int(self.num_embeddings_padded * current_rank_ratio / total_ratio)
+        
         assert (self.shard_indices.num_elements_padded ==
                 self.num_embeddings_per_partition)
         self.num_org_embeddings_per_partition = (
@@ -468,14 +469,17 @@ class VocabParallelEmbedding(torch.nn.Module):
                 self.shard_indices.num_org_vocab_padding,
                 self.shard_indices.added_vocab_start_index,
                 self.shard_indices.added_vocab_end_index)
+
         else:
             masked_input = input_
+        
         # Get the embeddings.
         output_parallel = self.quant_method.embedding(self,
                                                       masked_input.long())
         # Mask the output embedding.
         if self.tp_size > 1:
             output_parallel.masked_fill_(input_mask.unsqueeze(-1), 0)
+        
         # Reduce across all the model parallel GPUs.
         output = tensor_model_parallel_all_reduce(output_parallel)
         return output

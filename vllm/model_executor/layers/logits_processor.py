@@ -120,17 +120,27 @@ class LogitsProcessor(nn.Module):
         lm_head: VocabParallelEmbedding,
         embedding_bias: Optional[torch.Tensor],
     ) -> Optional[torch.Tensor]:
+        from vllm.distributed import get_tensor_model_parallel_rank
+        from vllm.logger import init_logger
+        
+        logger = init_logger(__name__)
+        tp_rank = get_tensor_model_parallel_rank()
+        
         # Get the logits for the next tokens.
         logits = lm_head.quant_method.apply(lm_head,
                                             hidden_states,
                                             bias=embedding_bias)
+        
+        logger.info(f"[🔥LOGITS] TP Rank {tp_rank}: Before gather - logits shape: {logits.shape if logits is not None else None}")
 
         # Gather logits for TP
         logits = self._gather_logits(logits)
 
         # Remove paddings in vocab (if any).
         if logits is not None:
+            logger.info(f"[🔥LOGITS] TP Rank {tp_rank}: After gather - logits shape: {logits.shape}")
             logits = logits[..., :self.org_vocab_size]
+            logger.info(f"[🔥LOGITS] TP Rank {tp_rank}: After padding removal - logits shape: {logits.shape}")
         return logits
 
     def extra_repr(self) -> str:

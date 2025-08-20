@@ -535,7 +535,11 @@ class ColumnParallelLinear(LinearBase):
                     # 비균등 분배: 비율 기반 계산
                     total_ratio = sum(weight_ratios)
                     final_shape[output_dim] = int(final_shape[output_dim] * weight_ratios[tp_rank] / total_ratio)
-                    
+
+            if is_gguf_weight:
+                    print(f"🔍[GGUF_COL_MATERIALIZE] Rank {tp_rank}: loaded_shape={loaded_weight.shape}, "
+                        f"final_shape={weight_shape[output_dim]}, weight_ratios={weight_ratios}")
+
             param.materialize(final_shape, dtype=loaded_weight.dtype)
 
         param_data = param.data
@@ -558,6 +562,11 @@ class ColumnParallelLinear(LinearBase):
                 # 전체 원본 크기 복원: shard_size * total_ratio / weight_ratios[tp_rank]
                 full_original_size = int(shard_size * total_ratio / weight_ratios[tp_rank])
                 start_idx = int(full_original_size * cumulative_ratios[tp_rank] / total_ratio)
+            
+            if is_gguf_weight:
+                print(f"🔍[GGUF_COL_DEBUG] Rank {tp_rank}: weight_ratios={weight_ratios}, "
+                      f"original_shape={loaded_weight.shape}, start_idx={start_idx}, "
+                      f"shard_size={shard_size}")
             
             loaded_weight = loaded_weight.narrow(output_dim, start_idx, shard_size)
 
@@ -583,6 +592,9 @@ class ColumnParallelLinear(LinearBase):
                     assert False, f"param_data.shape {param_data.shape} != loaded_weight.shape {loaded_weight.shape}"
             else:
                 assert False, f"param_data.shape {param_data.shape} != loaded_weight.shape {loaded_weight.shape}"
+        
+        print(f"🔍[COL_COPY] Rank {get_tensor_model_parallel_rank()}: "
+              f"Copying weight shape={loaded_weight.shape} to param shape={param_data.shape}")
         param_data.copy_(loaded_weight)
 
     def weight_loader_v2(self, param: Parameter, loaded_weight: torch.Tensor):
@@ -739,6 +751,9 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
                         param_data, loaded_weight, 0)
 
                 assert param_data.shape == loaded_weight.shape
+                
+                print(f"🔍[MERGED_COPY] Rank {tp_rank}: "
+                      f"Copying weight shape={loaded_weight.shape} to param shape={param_data.shape}")
                 param_data.copy_(loaded_weight)
                 return
             current_shard_offset = 0
@@ -865,6 +880,9 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
                     "the same for all partitions.")
 
         assert param_data.shape == loaded_weight.shape
+        
+        print(f"🔍[MERGED_COPY2] Rank {tp_rank}: "
+              f"Copying weight shape={loaded_weight.shape} to param shape={param_data.shape}")
         param_data.copy_(loaded_weight)
 
     def _load_fused_module_from_checkpoint(self, param: BasevLLMParameter,
@@ -1231,7 +1249,7 @@ class QKVParallelLinear(ColumnParallelLinear):
                 shard_size = end_idx - start_idx
             
             print(f"🔍[GGUF_QKV_DEBUG] Rank {tp_rank}: weight_ratios={weight_ratios}, "
-                  f"total_size={total_size}, start_idx={start_idx}, "
+                  f"total_size={loaded_weight.size(output_dim)}, start_idx={start_idx}, "
                   f"shard_size={shard_size}, loaded_shard_id={loaded_shard_id}")
 
             # Q/K/V 중 하나가 주어졌을 때
@@ -1263,6 +1281,9 @@ class QKVParallelLinear(ColumnParallelLinear):
                         param_data, loaded_weight, 0)
 
                 assert param_data.shape == loaded_weight.shape
+                
+                print(f"🔍[QKV_COPY] Rank {tp_rank}: "
+                      f"Copying weight shape={loaded_weight.shape} to param shape={param_data.shape}")
                 param_data.copy_(loaded_weight) # shape 일치 확인 후 복사
                 return
 
@@ -1438,7 +1459,9 @@ class QKVParallelLinear(ColumnParallelLinear):
                     assert False, f"param_data.shape {param_data.shape} != loaded_weight.shape {loaded_weight.shape}"
             else:
                 assert False, f"param_data.shape {param_data.shape} != loaded_weight.shape {loaded_weight.shape}"
-
+        
+        print(f"🔍[QKV_COPY2] Rank {tp_rank}: "
+              f"Copying weight shape={loaded_weight.shape} to param shape={param_data.shape}")
         param_data.copy_(loaded_weight)
 
 
@@ -1574,6 +1597,11 @@ class RowParallelLinear(LinearBase):
                     total_ratio = sum(weight_ratios)
                     original_size = weight_shape[input_dim]
                     weight_shape[input_dim] = int(original_size * weight_ratios[tp_rank] / total_ratio)
+
+                if is_gguf_weight:
+                    print(f"🔍[GGUF_ROW_MATERIALIZE] Rank {tp_rank}: loaded_shape={loaded_weight.shape}, "
+                        f"final_shape={weight_shape[input_dim]}, weight_ratios={weight_ratios}")
+
             param.materialize(tuple(weight_shape), dtype=loaded_weight.dtype)
 
         param_data = param.data
@@ -1594,6 +1622,11 @@ class RowParallelLinear(LinearBase):
                 # 전체 원본 크기 복원: shard_size * total_ratio / weight_ratios[tp_rank]
                 full_original_size = int(shard_size * total_ratio / weight_ratios[tp_rank])
                 start_idx = int(full_original_size * cumulative_ratios[tp_rank] / total_ratio)
+
+            if is_gguf_weight:
+                print(f"🔍[GGUF_ROW_DEBUG] Rank {tp_rank}: weight_ratios={weight_ratios}, "
+                      f"original_shape={loaded_weight.shape}, start_idx={start_idx}, "
+                      f"shard_size={shard_size}")
             
             loaded_weight = loaded_weight.narrow(input_dim, start_idx, shard_size)
 
@@ -1619,6 +1652,9 @@ class RowParallelLinear(LinearBase):
                     assert False, f"param_data.shape {param_data.shape} != loaded_weight.shape {loaded_weight.shape}"
             else:
                 assert False, f"param_data.shape {param_data.shape} != loaded_weight.shape {loaded_weight.shape}"
+        
+        print(f"🔍[ROW_COPY] Rank {tp_rank}: "
+              f"Copying weight shape={loaded_weight.shape} to param shape={param_data.shape}")
         param_data.copy_(loaded_weight)
 
     def weight_loader_v2(self, param: BasevLLMParameter,

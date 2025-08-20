@@ -273,7 +273,7 @@ except AttributeError as error:
 
 def _apply_gguf_embedding(
     x: torch.Tensor,
-    qweight: torch.Tensor,
+    qweight: torch.Tensor, # 양자화되어 저장된 임베딩 가중치 행렬
     qweight_type: int,
     hidden_size: int,
     dtype: Optional[torch.dtype] = None,
@@ -282,11 +282,23 @@ def _apply_gguf_embedding(
         return torch.embedding(qweight, x)
     elif qweight_type in DEQUANT_TYPES:
         block_size, type_size = gguf.GGML_QUANT_SIZES[qweight_type]
+
         x_flat = x.flatten()
+
+        x_flat = torch.clamp(x_flat, min=0, max=qweight.size(0) - 1)
+
+
+        # 일관성 체크: packed_len로부터 hidden_size가 정확히 재구성되는지 검증
         assert (hidden_size == qweight.shape[1] // type_size * block_size)
+
+        # x에 들어있는 토큰 ID(=행 인덱스)에 해당하는 양자화된 행들만 뽑아옴
         quant = torch.index_select(qweight, dim=0, index=x_flat)
+
+        # GGUF 타입별로 정의된 block_siz와 type_size를 사용해 각 행의 패킹 데이터를 실수 벡터(hidden_size 길이)로 복원
         dequant = ops.ggml_dequantize(quant, qweight_type, hidden_size,
                                       x_flat.shape[0], dtype)
+        
+        # 원래 배치/시퀀스 모양으로 reshape
         return dequant.view(*x.shape, hidden_size)
     else:
         qweight_type = WeightType(qweight_type)
