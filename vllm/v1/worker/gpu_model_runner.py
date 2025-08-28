@@ -251,6 +251,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         # None in the first PP rank. The rest are set after load_model.
         self.intermediate_tensors: Optional[IntermediateTensors] = None
+        
+        # Track cumulative execution times
+        self.cumulative_model_exec_time: float = 0.0
+        self.cumulative_total_exec_time: float = 0.0
+        self.num_model_executions: int = 0
 
         # Only relevant for models using M-RoPE (e.g, Qwen2-VL)
         if self.uses_mrope:
@@ -1281,6 +1286,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         scheduler_output: "SchedulerOutput",
         intermediate_tensors: Optional[IntermediateTensors] = None,
     ) -> Union[ModelRunnerOutput, IntermediateTensors]:
+        import time
+        start_time = time.perf_counter()
+        
         self._update_states(scheduler_output)
         if not scheduler_output.total_num_scheduled_tokens:
             if has_kv_transfer_group():
@@ -1288,6 +1296,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     self.maybe_setup_kv_connector(scheduler_output)
 
             # Return empty ModelRunnerOutput if there's no work to do.
+            end_time = time.perf_counter()
+            logger.info(f"Total execution time (empty): {end_time - start_time:.6f} seconds")
             return EMPTY_MODEL_RUNNER_OUTPUT
 
         # Prepare the decoder inputs.
@@ -1364,6 +1374,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         # Run the model.
         # Use persistent buffers for CUDA graphs.
+        model_start_time = time.perf_counter()
         with set_forward_context(
                 attn_metadata,
                 self.vllm_config,
@@ -1381,6 +1392,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             )
 
             self.maybe_wait_for_kv_save()
+        model_end_time = time.perf_counter()
+        model_exec_time = model_end_time - model_start_time
+        #logger.info(f"Model execution time: {model_exec_time:.6f} seconds")
 
         if self.use_aux_hidden_state_outputs:
             hidden_states, aux_hidden_states = model_output
@@ -1393,7 +1407,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # TODO: Support overlapping mirco-batches
         # https://github.com/vllm-project/vllm/issues/18019
 
-        # 마지막 stage에서 계산한 logits를 다른 rank들과 broadcast
         broadcast_pp_output = \
             self.parallel_config.distributed_executor_backend \
             == "external_launcher" and len(get_pp_group().ranks) > 0
@@ -1401,6 +1414,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         if not get_pp_group().is_last_rank:
             # For mid-pipeline stages, return the hidden states.
             if not broadcast_pp_output:
+                end_time = time.perf_counter()
                 return hidden_states
             assert isinstance(hidden_states, IntermediateTensors)
             get_pp_group().send_tensor_dict(hidden_states.tensors,
@@ -1408,12 +1422,14 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             logits = None
             
         else: # 마지막 rank 처리
-            if self.input_batch.pooling_params:
-                return self._pool(hidden_states, num_scheduled_tokens,
+            if self.input_batch.pooling_params: # 임베딩만 필요할 때 조기 종료
+                result = self._pool(hidden_states, num_scheduled_tokens,
                                   num_scheduled_tokens_np)
+                end_time = time.perf_counter()
+                return result
 
             sample_hidden_states = hidden_states[logits_indices]
-            logits = self.model.compute_logits(sample_hidden_states, None)
+            logits = self.model.compute_logits(sample_hidden_states, None) # 샘플된 hidden_states에 대해 로짓을 계산
 
         # logits broadcast 처리 (from last to others)
         if broadcast_pp_output:
@@ -1433,6 +1449,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             self.apply_grammar_bitmask(scheduler_output, logits)
 
         # Sample the next token and get logprobs if needed.
+        # 이후 토큰 예측
         sampling_metadata = self.input_batch.sampling_metadata
         if spec_decode_metadata is None:
             sampler_output = self.sampler(
@@ -1556,6 +1573,22 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         self.eplb_step()
 
+        end_time = time.perf_counter()
+        total_time = end_time - start_time
+        
+        # Track cumulative execution times
+        self.cumulative_model_exec_time += model_exec_time
+        self.cumulative_total_exec_time += total_time
+        self.num_model_executions += 1
+        
+        logger.info(f"Total execution time: {total_time:.6f} seconds")
+        logger.info(f"Model forward pass time: {model_exec_time:.6f} seconds")
+        logger.info(f"Cumulative model forward time: {self.cumulative_model_exec_time:.6f} seconds "
+                   f"over {self.num_model_executions} executions")
+        logger.info(f"Cumulative total execution time: {self.cumulative_total_exec_time:.6f} seconds "
+                   f"over {self.num_model_executions} executions")
+        logger.info(f"Number of tokens processed: {num_scheduled_tokens}")
+        
         return ModelRunnerOutput(
             req_ids=self.input_batch.req_ids,
             req_id_to_index=self.input_batch.req_id_to_index,

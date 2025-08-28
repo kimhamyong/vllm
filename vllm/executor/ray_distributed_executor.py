@@ -110,7 +110,7 @@ class RayDistributedExecutor(DistributedExecutorBase):
 
         self.pp_locks: Optional[List[asyncio.Lock]] = None
         if not self.use_ray_compiled_dag:
-            self.driver_exec_method = make_async(
+            self.driver_exec_method = make_async( # driver_worker.execute_method를 async로 감싸서 Ray 워커 호출과 동일한 패턴으로 다루기 위해 make_async 사용
                 self.driver_worker.execute_method)
 
     def shutdown(self) -> None:
@@ -270,6 +270,8 @@ class RayDistributedExecutor(DistributedExecutorBase):
         sorted_worker_metadata = sorted(worker_metadata,
                                         key=sort_by_driver_then_worker_ip)
         start_rank = 0 if self.use_ray_spmd_worker else 1
+
+        # Ray SPMD 모드 여부에 따라 rank 시작 번호 설정
         for i, item in enumerate(sorted_worker_metadata):
             item.adjusted_rank = i + start_rank
         self.workers = [item.worker for item in sorted_worker_metadata]
@@ -365,7 +367,7 @@ class RayDistributedExecutor(DistributedExecutorBase):
                 rank=rank,
                 distributed_init_method=distributed_init_method,
                 is_driver_worker=(not self.parallel_config)
-                or (rank % self.parallel_config.tensor_parallel_size == 0),
+                or (rank % self.parallel_config.tensor_parallel_size == 0), # rank=0이면 무조건 is_driver_worker=True
             )
             all_kwargs.append(kwargs)
         self._run_workers("init_worker", all_kwargs)
@@ -375,9 +377,9 @@ class RayDistributedExecutor(DistributedExecutorBase):
                           max_concurrent_workers=self.parallel_config.
                           max_parallel_loading_workers)
 
-        if self.use_ray_spmd_worker:
+        if self.use_ray_spmd_worker: 
             for pp_rank in range(self.parallel_config.pipeline_parallel_size):
-                self.pp_tp_workers.append([])
+                self.pp_tp_workers.append([]) # 파이프라인 병렬 개수만큼 리스트 생성
                 for tp_rank in range(
                         self.parallel_config.tensor_parallel_size):
                     # PP=2, TP=4
@@ -391,7 +393,7 @@ class RayDistributedExecutor(DistributedExecutorBase):
         # This is the list of workers that are rank 0 of each TP group EXCEPT
         # global rank 0. These are the workers that will broadcast to the
         # rest of the workers.
-        self.tp_driver_workers: List[RayWorkerWrapper] = []
+        self.tp_driver_workers: List[RayWorkerWrapper] = [] # pp 관련 필요
         # This is the list of workers that are not drivers and not the first
         # worker in a TP group. These are the workers that will be
         # broadcasted to.
@@ -450,7 +452,7 @@ class RayDistributedExecutor(DistributedExecutorBase):
         """Runs the given method on all workers. Can be used in the following
         ways:
 
-        Args:
+        Args: # spmd에서는 아님
         - async_run_tensor_parallel_workers_only: If True the method will be
           run only in the remote TP workers, not the driver worker.
           It will also be run asynchronously and return a list of futures
@@ -595,6 +597,7 @@ class RayDistributedExecutor(DistributedExecutorBase):
 
             # All workers in the first TP group will take in the
             # ExecuteModelRequest as input.
+            # 첫 번째 TP 그룹의 모든 워커 수만큼 input_data를 복제해서 outputs에 담음
             outputs = [input_data for _ in self.pp_tp_workers[0]]
             for pp_rank, tp_group in enumerate(self.pp_tp_workers):
                 # Each PP worker takes in the output of the previous PP worker,
@@ -602,8 +605,10 @@ class RayDistributedExecutor(DistributedExecutorBase):
                 if self.use_v1:
                     outputs = [
                         worker.execute_model_ray.
+                        # 각 PP 스테이지에서 TP 그룹 전체를 순회하며, TP 인덱스 i별 해당 입력(outputs[i])을 그 TP 워커에 바인딩
+                        # SchedulerOutput -> 0 -> 첫 PP (SchedulerOutput, IntermediateTensors) -> 4 -> 마지막 PP ModelRunnerOutput   # noqa: E501
                         bind(  # type: ignore[attr-defined]
-                            outputs[i]) for i, worker in enumerate(tp_group)
+                            outputs[i]) for i, worker in enumerate(tp_group) # 이전 스테이지의 결과를 연결(바인딩)하는 그래프 구조 정의
                     ]
                 else:
                     outputs = [
@@ -620,7 +625,7 @@ class RayDistributedExecutor(DistributedExecutorBase):
                     # pp stage or when using shared memory (the default).
                     transport = envs.VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE
                     outputs = [
-                        output.with_tensor_transport(transport=transport)
+                        output.with_tensor_transport(transport=transport) # DAG의 엣지(데이터 전송 경로) 메타정보 설정
                         for output in outputs
                     ]
 
@@ -641,7 +646,7 @@ class RayDistributedExecutor(DistributedExecutorBase):
             return await super().execute_model_async(execute_model_req)
 
         if self.forward_dag is None:
-            self.forward_dag = self._compiled_ray_dag(enable_asyncio=True)
+            self.forward_dag = self._compiled_ray_dag(enable_asyncio=True) # Compiled DAG를 async 지원으로 컴파일해 캐싱
 
         serialized_data = self.input_encoder.encode(execute_model_req)
         dag_future = await self.forward_dag.execute_async(serialized_data)

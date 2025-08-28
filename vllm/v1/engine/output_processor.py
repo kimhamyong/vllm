@@ -438,7 +438,7 @@ class OutputProcessor:
         return OutputProcessorOutput(
             request_outputs=request_outputs,
             reqs_to_abort=reqs_to_abort,
-        )
+        ) # 최종 반환
 
     def _update_stats_from_output(self, req_state: RequestState,
                                   engine_core_output: EngineCoreOutput,

@@ -53,6 +53,7 @@ class RayDistributedExecutor(RayDistributedExecutorV0, Executor):
         if self.forward_dag is None:  # type: ignore
             self.forward_dag = self._compiled_ray_dag(enable_asyncio=False)
 
+        # DAG 실행 및 결과 수집
         refs = self.forward_dag.execute(scheduler_output)  # type: ignore
 
         # When PP is not used, we block here until the result is available.

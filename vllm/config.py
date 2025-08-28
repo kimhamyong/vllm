@@ -1178,6 +1178,13 @@ class ModelConfig:
                         f"Total number of attention heads ({total_num_attention_heads}) "
                         f"must be divisible by sum of weight ratios ({sum_ratios})")
                 
+                # Check if sum_ratios is greater than number of KV heads
+                total_num_kv_heads = self.get_total_num_kv_heads()
+                if sum_ratios > total_num_kv_heads:
+                    raise ValueError(
+                        f"Sum of weight ratios ({sum_ratios}) cannot be greater than "
+                        f"total number of KV heads ({total_num_kv_heads})")
+                
                 # Calculate heads per GPU based on ratios
                 heads_per_unit = total_num_attention_heads // sum_ratios
                 logger.info("Weight distribution enabled with ratios %s", ratios)

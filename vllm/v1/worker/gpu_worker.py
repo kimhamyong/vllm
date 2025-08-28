@@ -338,11 +338,13 @@ class Worker(WorkerBase):
         self,
         scheduler_output: "SchedulerOutput",
     ) -> Optional[ModelRunnerOutput]:
+
+        # 앞 스테이지에서 받은 중간 텐서 저장
         intermediate_tensors = None
         if not get_pp_group().is_first_rank:
             intermediate_tensors = IntermediateTensors(
                 get_pp_group().recv_tensor_dict(
-                    all_gather_group=get_tp_group()))
+                    all_gather_group=get_tp_group())) # PP 스테이지 간 전송을 하면서 TP 그룹 정렬을 함께 고려
 
         output = self.model_runner.execute_model(scheduler_output,
                                                  intermediate_tensors)
@@ -354,9 +356,7 @@ class Worker(WorkerBase):
             get_pp_group().send_tensor_dict(output.tensors,
                                             all_gather_group=get_tp_group())
 
-            output = EMPTY_MODEL_RUNNER_OUTPUT
-
-        
+            output = EMPTY_MODEL_RUNNER_OUTPUT # 모델 출력은 마지막 스테이지에서만 반환
 
         assert isinstance(output, ModelRunnerOutput)
         if has_kv_transfer_group():
@@ -373,7 +373,7 @@ class Worker(WorkerBase):
             get_kv_transfer_group().clear_connector_metadata()
 
             # with a connector, the scheduler expects output from all workers
-            return output
+            return output # KV 커넥터가 켜져 있으면 모든 워커가 output을 반환, 드라이버 여부와 무관
 
         # return output only from the driver worker
         return output if self.is_driver_worker else None

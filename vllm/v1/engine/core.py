@@ -238,8 +238,8 @@ class EngineCore:
         if not self.scheduler.has_requests():
             return {}, False
         scheduler_output = self.scheduler.schedule()
-        model_output = self.execute_model(scheduler_output)
-        engine_core_outputs = self.scheduler.update_from_output(
+        model_output = self.execute_model(scheduler_output) # 여기서 execute_model에서 반환된 output 사용
+        engine_core_outputs = self.scheduler.update_from_output( # 스케쥴러에 전달하여 상태 업데이트
             scheduler_output, model_output)  # type: ignore
 
         return (engine_core_outputs,
